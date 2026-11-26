@@ -11,6 +11,7 @@ A small reader you run on your own computer. Paste a link and get the page back 
 - **Send to Reader bookmarklet.** Click it on any page open in your own browser, including articles you subscribe to, and that page opens in Reader view exactly as your browser had it.
 - **Your library.** Press **📌 Keep a copy** to save a page on your computer with its styles, images, fonts and scripts, plus a Reader version, to read later, even offline.
 - **AI tidy (optional).** When an article comes out messy, one click asks an AI model how it should be laid out: headings, lists, paragraphs that were split apart, clutter to leave out. The model never writes text; the page is rebuilt from the original words, and a check confirms nothing was reworded.
+- **A climb instead of a spinner.** While a page loads, Grandma climbs the ladder rung by rung, lasagna in hand, and the altimeter counts up to 9,001 ft. If a page can't be fetched she shrugs and tells you why. The animations switch off when your system asks for reduced motion.
 - **archive.org pages that keep their look.** Pages loaded from the Wayback Machine keep their styles and images instead of arriving as bare text.
 
 | Home | Reader view |
@@ -78,6 +79,7 @@ Notes:
 ## Using it
 
 - **Paste a link** on the home page. Tick **Open in Reader view** to go straight to the clean version.
+- **New here?** The first visit offers **Try a sample**, which fetches a Wikipedia article about ladders and opens it in Reader view.
 - **Put the link after the address:** `http://localhost:5013/https://example.com/some-article` (from [@atcasanova](https://github.com/atcasanova)).
 - **Reader view directly:** `http://localhost:5013/reader/https://example.com/some-article`, or press the 📖 button on any page 9001ft fetched.
 

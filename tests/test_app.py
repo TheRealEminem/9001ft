@@ -20,6 +20,12 @@ ARTICLE = "<html><head><title>Article</title></head><body><p>Useful article cont
 URL = "https://example.com/news/article"
 
 
+def error_page_message(response):
+    """The explanation shown on the friendly error page."""
+    match = re.search(r'<p class="message" id="error-message">(.*?)</p>', response.get_data(as_text=True), re.S)
+    return web.html_lib.unescape(match.group(1)) if match else None
+
+
 class AppTests(unittest.TestCase):
     def setUp(self):
         self.env = patch.dict(os.environ, {"LOCALE": "en"})
@@ -40,8 +46,9 @@ class AppTests(unittest.TestCase):
     def test_home_renders_form(self):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Enter Website Link", response.data)
+        self.assertIn(b"What would you like to read?", response.data)
         self.assertIn(b'<form', response.data)
+        self.assertIn(b'id="reader-mode"', response.data)
 
     def test_portuguese_home(self):
         with patch.dict(os.environ, {"LOCALE": "pt"}):
@@ -78,13 +85,14 @@ class AppTests(unittest.TestCase):
             with self.subTest(error=type(error).__name__), patch.object(web, "bypass_paywall", side_effect=error):
                 response = self.client.post("/article", data={"link": URL})
                 self.assertEqual(response.status_code, status)
-                self.assertEqual(response.get_data(as_text=True), self.strings[message])
+                self.assertEqual(error_page_message(response), self.strings[message])
+                self.assertNotIn("private details", response.get_data(as_text=True))
 
     def test_article_custom_error(self):
         with patch.object(web, "bypass_paywall", side_effect=web.UserFacingError("Unavailable")):
             response = self.client.post("/article", data={"link": URL})
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.get_data(as_text=True), "Unavailable")
+        self.assertEqual(error_page_message(response), "Unavailable")
 
     def test_cached_article_avoids_fetch(self):
         web.page_cache[URL] = {"html": ARTICLE, "timestamp": web.time.time()}
@@ -638,6 +646,135 @@ class SettingsRouteTests(unittest.TestCase):
         self.assertIn('href="/settings"', self.client.get("/").get_data(as_text=True))
 
 
+class FunPassTests(unittest.TestCase):
+    """The climbing loading screen, the home page's small surprises and the friendly error page."""
+
+    def setUp(self):
+        self.env = patch.dict(os.environ, {"LOCALE": "en"})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.network = patch.object(web.requests.sessions.Session, "request", side_effect=AssertionError("Unexpected network access"))
+        self.network.start()
+        self.addCleanup(self.network.stop)
+        web.page_cache.clear()
+        web.load_strings_for_locale.cache_clear()
+        self.addCleanup(web.load_strings_for_locale.cache_clear)
+        self.client = web.app.test_client()
+        self.strings = web.load_strings()
+
+    def test_english_locale_file_matches_the_defaults(self):
+        path = Path(__file__).resolve().parents[1] / "app" / "locales" / "en.json"
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")), web._DEFAULT_STRINGS)
+
+    def test_step_ids_are_unchanged_and_lines_stay_clear(self):
+        steps = web.build_steps(self.strings)
+        self.assertEqual(
+            [step["id"] for step in steps],
+            ["connect", "fetch", "detect", "fallback_freedium", "fallback_org", "fallback_ph", "process", "cleanup", "done"],
+        )
+        self.assertIn("archive.org", self.strings["step_fallback_org"])
+        self.assertIn("archive.today", self.strings["step_fallback_ph"])
+        self.assertIn("9,001", self.strings["step_done"])
+
+    def test_home_has_the_climbing_scene(self):
+        body = self.client.get("/").get_data(as_text=True)
+        self.assertIn('id="scene"', body)
+        self.assertIn('class="climber"', body)
+        self.assertIn('id="altitude"', body)
+        # Screen readers hear the current step, not the drawing or the spinning counter.
+        self.assertIn('id="status-now" role="status" aria-live="polite"', body)
+        self.assertIn('<svg class="scene-art" viewBox="0 0 360 420" aria-hidden="true"', body)
+        self.assertIn('id="error-area" role="alert"', body)
+        self.assertIn("prefers-reduced-motion", body)
+        self.assertIn(self.strings["step_fallback_org"], web.html_lib.unescape(json.loads(
+            re.search(r"const STEPS = (\[.*?\]);", body).group(1))[4]["label"]))
+
+    def test_home_has_tagline_welcome_sample_and_feet(self):
+        body = self.client.get("/").get_data(as_text=True)
+        taglines = self.strings["taglines"]
+        self.assertTrue(8 <= len(taglines) <= 15)
+        self.assertEqual(len(set(taglines)), len(taglines))
+        self.assertIn('<span id="tagline">' + taglines[0] + "</span>", body)
+        self.assertIn('id="welcome" hidden', body)
+        self.assertIn('id="sample-link" href="/reader/https://en.wikipedia.org/wiki/Ladder"', body)
+        self.assertIn(">Try a sample<", body)
+        self.assertIn('id="feet" hidden', body)
+        milestones = self.strings["feet_milestones"]
+        self.assertEqual(milestones, sorted(milestones))
+        # The surprises are extras: every use of saved state goes through the guarded helper.
+        self.assertEqual(body.count("localStorage."), 2)
+        self.assertIn("try { return localStorage.getItem(key); } catch (e) { return null; }", body)
+        self.assertIn("try { localStorage.setItem(key, value); } catch (e) {}", body)
+
+    def test_home_keeps_form_bookmarklet_and_settings_link(self):
+        body = self.client.get("/").get_data(as_text=True)
+        for needle in ('id="url-form"', 'id="link"', 'id="reader-mode"', 'class="bookmarklet-link"', 'href="/settings"'):
+            self.assertIn(needle, body)
+
+    def test_scene_works_under_a_strict_policy(self):
+        svg = web.climb.scene_svg()
+        self.assertNotIn("style=", svg)
+        self.assertNotIn("<script", svg)
+        self.assertNotRegex(svg, r"\son\w+=")
+        self.assertEqual(svg.count("<svg"), 1)
+        self.assertTrue(svg.endswith("</svg>"))
+
+    def test_climber_stays_on_the_ladder(self):
+        bottom, top = web.climb.climber_position(0), web.climb.climber_position(1)
+        self.assertEqual(web.climb.climber_position(-3), bottom)
+        self.assertEqual(web.climb.climber_position(7), top)
+        self.assertLess(top[1], bottom[1])
+        self.assertGreater(top[0], bottom[0])
+        self.assertIn('transform="translate(%s %s)"' % web.climb.climber_position(0.45), web.climb.scene_svg(0.45))
+
+    def test_error_page_is_friendly_and_locked_down(self):
+        with patch.object(web, "bypass_paywall", side_effect=web.requests.exceptions.ConnectionError()):
+            response = self.client.get("/" + URL)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.mimetype, "text/html")
+        body = response.get_data(as_text=True)
+        self.assertEqual(error_page_message(response), self.strings["connection_error"])
+        self.assertIn('class="scene is-error"', body)
+        self.assertIn('<a class="btn" href="/">Try another link</a>', body)
+        self.assertIn("<b>400 ft</b>", body)
+        policy = response.headers["Content-Security-Policy"]
+        nonce = re.search(r"script-src 'nonce-([\w-]+)'", policy).group(1)
+        self.assertIn("default-src 'none'", policy)
+        self.assertIn(f"style-src 'nonce-{nonce}'", policy)
+        self.assertNotIn("unsafe", policy)
+        self.assertIn("frame-ancestors 'none'", policy)
+        self.assertEqual(body.count(f'nonce="{nonce}"'), 2)
+        self.assertEqual(len(re.findall(r"<(?:script|style)\b", body)), 2)
+        self.assertNotIn("style=", body)
+        self.assertNotIn("http://", body.replace("http://www.w3.org/2000/svg", ""))
+        self.assertNotIn("https://", body)
+        self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
+
+    def test_error_page_escapes_the_message(self):
+        with patch.object(web, "bypass_paywall", side_effect=web.UserFacingError('<script>alert(1)</script> "quoted"')):
+            response = self.client.get("/" + URL)
+        self.assertNotIn("<script>alert(1)", response.get_data(as_text=True))
+        self.assertEqual(error_page_message(response), '<script>alert(1)</script> "quoted"')
+
+    def test_every_article_route_uses_the_error_page(self):
+        invalid = self.strings["invalid_url"]
+        self.assertEqual(error_page_message(self.client.get("/not-a-link")), invalid)
+        self.assertEqual(error_page_message(self.client.post("/reader", data={"url": URL})), invalid)
+        with patch.object(web, "bypass_paywall", side_effect=RuntimeError("private details")):
+            for response in (self.client.get("/" + URL), self.client.get("/reader/" + URL), self.client.post("/article", data={"link": URL})):
+                self.assertEqual(response.status_code, 500)
+                self.assertEqual(error_page_message(response), self.strings["unexpected_error"])
+                self.assertNotIn("private details", response.get_data(as_text=True))
+
+    def test_other_languages_get_the_new_lines_in_english(self):
+        with patch.dict(os.environ, {"LOCALE": "de"}):
+            web.load_strings_for_locale.cache_clear()
+            body = self.client.get("/").get_data(as_text=True)
+        self.assertIn('lang="de"', body)
+        self.assertIn("Website-Link eingeben", body)
+        self.assertIn(">Try a sample<", body)
+
+
 class PublicWordingTests(unittest.TestCase):
     """The project never advertises getting around paywalls or similar."""
     BANNED = re.compile(
@@ -658,6 +795,7 @@ class PublicWordingTests(unittest.TestCase):
 
     def test_pages_readme_and_image_labels(self):
         self.assertClean("home page template", web.html)
+        self.assertClean("error page template", web.climb.ERROR_TEMPLATE)
         self.assertClean("reader template", web.reader.READER_TEMPLATE)
         self.assertClean("settings page", web.settings_page.SETTINGS_TEMPLATE)
         for name in ("README.md", "Dockerfile", "docker-compose.yaml"):
@@ -822,6 +960,7 @@ class ReaderTests(unittest.TestCase):
         with patch.object(web, "bypass_paywall", side_effect=web.requests.exceptions.Timeout()):
             response = self.client.get("/reader/" + URL)
         self.assertEqual(response.status_code, 400)
+        self.assertEqual(error_page_message(response), web.load_strings()["timeout_error"])
 
     def test_reader_accepts_page_from_bookmarklet(self):
         response = self.client.post("/reader", data={"html": READER_PAGE, "url": URL})
