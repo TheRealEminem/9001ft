@@ -328,7 +328,7 @@ READER_TEMPLATE = """<!DOCTYPE html>
 <header class="bar">
   <div class="bar-inner">
     <a class="brand" href="/">9001ft</a>
-    <a href="{{ original_href }}">{{ reader_original }}</a>
+    {% if original_href %}<a href="{{ original_href }}">{{ reader_original }}</a>{% endif %}
     <a href="{{ source_url }}" rel="noopener noreferrer">{{ reader_source }} &#8599;</a>
     <button type="button" id="smaller" title="{{ reader_smaller }}" aria-label="{{ reader_smaller }}">A&minus;</button>
     <button type="button" id="larger" title="{{ reader_larger }}" aria-label="{{ reader_larger }}">A+</button>
@@ -347,7 +347,7 @@ READER_TEMPLATE = """<!DOCTYPE html>
   {% if article.content %}
   <article>{{ article.content | safe }}</article>
   {% else %}
-  <p class="empty">{{ reader_empty }} <a href="{{ original_href }}">{{ reader_original }}</a></p>
+  <p class="empty">{{ reader_empty }} <a href="{{ original_href or source_url }}">{{ reader_original }}</a></p>
   {% endif %}
 </main>
 <script nonce="{{ nonce }}">
