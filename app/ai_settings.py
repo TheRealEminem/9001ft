@@ -41,6 +41,11 @@ PROVIDERS = {
 }
 
 MODES = ("off", "local", "byok")
+# What Reader view does with AI tidy when an AI is set up:
+#   suggest  show a prominent "Tidy this up?" offer (default)
+#   auto     tidy archived or messy pages automatically, with Show original
+#   off      only the toolbar button
+TIDY_MODES = ("suggest", "auto", "off")
 REASONING = ("", "none", "low", "medium", "high")
 
 
@@ -166,6 +171,14 @@ def backends_for(ai):
     return [backend for backend in found if backend]
 
 
+def tidy_mode():
+    """Reader view's AI tidy behaviour (see TIDY_MODES). Saved settings win,
+    then the TIDY_MODE environment variable, then "suggest"."""
+    saved = (load() or {}).get("tidy_mode")
+    mode = saved or os.environ.get("TIDY_MODE", "").strip().lower() or "suggest"
+    return mode if mode in TIDY_MODES else "suggest"
+
+
 def backends():
     ai = load()
     return backends_for(ai) if ai is not None else _env_backends()
@@ -250,6 +263,7 @@ def merge_draft(draft, keep_saved_keys=True):
         "fallback_local": bool(draft.get("fallback_local")),
         "ollama_url": ollama_url, "ollama_model": str(draft.get("ollama_model") or "").strip(),
         "local_reasoning": local_reasoning,
+        "tidy_mode": draft.get("tidy_mode") if draft.get("tidy_mode") in TIDY_MODES else current.get("tidy_mode", "suggest"),
     }
 
 

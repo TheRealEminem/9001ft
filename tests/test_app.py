@@ -2144,5 +2144,26 @@ class ThemeTests(unittest.TestCase):
                 self.assertNotIn("#9b4dca", body.split("<body")[0].split("theme-color")[1][:40] if "theme-color" in body else "")
 
 
+class TidyModeTests(unittest.TestCase):
+    def setUp(self):
+        env = patch.dict(os.environ, no_tidy_env(), clear=True)
+        env.start()
+        self.addCleanup(env.stop)
+        clear_saved_settings()
+        self.addCleanup(clear_saved_settings)
+
+    def test_default_env_and_saved(self):
+        s = web.ai_settings
+        self.assertEqual(s.tidy_mode(), "suggest")
+        with patch.dict(os.environ, {"TIDY_MODE": "AUTO"}):
+            self.assertEqual(s.tidy_mode(), "auto")
+        with patch.dict(os.environ, {"TIDY_MODE": "bogus"}):
+            self.assertEqual(s.tidy_mode(), "suggest")
+        s.save(s.merge_draft({"mode": "off", "tidy_mode": "off"}))
+        self.assertEqual(s.tidy_mode(), "off")
+        s.save(s.merge_draft({"mode": "off"}))
+        self.assertEqual(s.tidy_mode(), "off", "a draft without tidy_mode keeps the saved one")
+
+
 if __name__ == "__main__":
     unittest.main()
