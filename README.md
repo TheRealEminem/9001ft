@@ -78,7 +78,9 @@ Notes:
 
 ## Using it
 
-- **Paste a link** on the home page. Tick **Open in Reader view** to go straight to the clean version.
+- **Paste a link** on the home page. It opens in Reader view, the clean version, unless you untick **Open in Reader view (recommended)** to get the full original layout. Your choice is remembered.
+- **Where the page came from.** Reader view says so under the title: the live site, the website, archive.org's copy (with its date), archive.today's copy, Freedium, or your own browser. Copies from an archive may be missing some pictures or styling.
+- **Full page and Live page.** In Reader view, **Full page** opens 9001ft's whole copy of the page with its layout and scripts, and **Live page ↗** opens the real page in a new tab, animations and all. When an article has interactive graphics (charts, maps, embedded demos) that Reader view can't show, a note at the top offers both.
 - **New here?** The first visit offers **Try a sample**, which fetches a Wikipedia article about ladders and opens it in Reader view.
 - **Put the link after the address:** `http://localhost:5013/https://example.com/some-article` (from [@atcasanova](https://github.com/atcasanova)).
 - **Reader view directly:** `http://localhost:5013/reader/https://example.com/some-article`, or press the 📖 button on any page 9001ft fetched.
@@ -137,6 +139,12 @@ Browsers only offer this at `localhost` or over HTTPS. On a home server reached 
 
 When a page comes out jumbled (archived copies often do), press **✨ Tidy up** in Reader view. The button appears once you've chosen an AI (below).
 
+With an AI chosen, Reader view also offers it at the top of the article, depending on the tidy mode (`suggest` by default, or `TIDY_MODE`):
+
+- **suggest:** a card asks whether to tidy. It's prominent on archive copies and pages that look jumbled, and a single quiet line elsewhere. **No thanks** hides it for that page.
+- **auto:** archive copies and jumbled-looking pages are tidied as they open, which sends their text to your AI without asking each time. **Show original** switches back.
+- **off:** only the toolbar button.
+
 How it stays faithful: the article is split into numbered blocks, and the model answers only with a plan (block 4 is a heading, blocks 7 and 8 are one paragraph, block 12 is an ad). 9001ft rebuilds the page from the original blocks, so the model can't add or change a word. It can leave out short clutter blocks, capped at 60 words each and a quarter of the article. A final check compares the words before and after, and **Show original** switches back at any time.
 
 ### Choosing the AI
@@ -174,7 +182,7 @@ TIDY_FALLBACK_MODEL=...                     # (and _API_KEY, _API_KEY_FILE, _REA
 
 ## How it works
 
-When you paste a link, 9001ft asks the site for the page the way Google's crawler does, since many sites give search engines the full text. Many large sites now check that such requests really come from Google, so when that fails it tries public copies: Freedium for Medium, then the Internet Archive's Wayback Machine, then archive.today. The status page shows each step. (Multi-source fallbacks from [@JRS1986](https://github.com/JRS1986).)
+When you paste a link, 9001ft first asks the site for the page the way an ordinary browser does, and uses that live page when it holds a whole article (Medium links go to Freedium first). Otherwise it asks the way Google's crawler does, since many sites give search engines the full text. Many large sites now check that such requests really come from Google, so when that fails it tries public copies: Freedium for Medium, then the Internet Archive's Wayback Machine, then archive.today. The status page shows each step. (Multi-source fallbacks from [@JRS1986](https://github.com/JRS1986).)
 
 Public copies have limits. archive.today saves pages without any JavaScript, so animations and interactive graphics can't come back from there. archive.org keeps them, and 9001ft loads its copies of the page's styles, images and scripts. archive.org doesn't let other sites use its copies of fonts and CSS icons, so 9001ft passes stylesheets, fonts and icons through a small relay on your own server that adds the permission browsers need. The relay only fetches from archive.org.
 
@@ -197,7 +205,7 @@ venv/bin/python -m pip install pytest
 venv/bin/python -m pytest -q
 ```
 
-The tests run offline: Flask's test client stands in for the browser, and every outside request is mocked. They cover the routes, error handling, languages, HTML processing, archive.org rewriting, Reader view extraction and sanitizing, Markdown and EPUB export, AI tidy plans and their safety checks, the archive.org relay, the bookmarklet endpoints, the library (saving, sandboxing, address checks and size limits), the self-hosting parts (password, login cookie, bookmarklet token, health check, manifest, service worker and share target), caching, archive fallbacks and the progress stream. GitHub Actions runs them on every push and pull request (`.github/workflows/test.yml`).
+The tests run offline: Flask's test client stands in for the browser, and every outside request is mocked. They cover the routes, error handling, languages, HTML processing, archive.org rewriting, Reader view extraction and sanitizing, Markdown and EPUB export, AI tidy plans and their safety checks, the live-first fetch and page sources, the Reader view notices and tidy card, the archive.org relay, the bookmarklet endpoints, the library (saving, sandboxing, address checks and size limits), the self-hosting parts (password, login cookie, bookmarklet token, health check, manifest, service worker and share target), caching, archive fallbacks and the progress stream. GitHub Actions runs them on every push and pull request (`.github/workflows/test.yml`).
 
 ## Credits
 
