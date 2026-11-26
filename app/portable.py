@@ -13,7 +13,26 @@ from urllib.parse import urljoin, urlparse, quote, unquote
 from flask import request, Response
 from bs4 import BeautifulSoup
 
-import reader
+
+def load_local_env(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env.local")):
+    """Read KEY=VALUE lines from .env.local (git-ignored) into the environment.
+    Real environment variables win. Used for optional settings like AI tidy."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+    except OSError:
+        pass
+
+
+load_local_env()
+
+import reader  # noqa: E402
+import tidy  # noqa: E402
 
 app = flask.Flask(__name__)
 # The Send to Reader bookmarklet posts a whole page; Werkzeug's default limit
@@ -68,6 +87,19 @@ _DEFAULT_STRINGS = {
         "Drag this to your bookmarks bar. On any article you're reading in your own "
         "browser, including ones you subscribe to, click it to open that page in Reader view."
     ),
+    "tidy_button": "Tidy up",
+    "tidy_working": "Tidying…",
+    "tidy_working_note": (
+        "Asking the AI how this page should be laid out. It only arranges what's "
+        "already here and never rewrites it. This can take a minute."
+    ),
+    "tidy_done": (
+        "Tidied by {model} in {seconds}s: {headings} headings added, {joined} pieces joined, "
+        "{lists} lists, {dropped} words of clutter removed. The wording is unchanged."
+    ),
+    "tidy_show_original": "Show original",
+    "tidy_show_tidy": "Show tidied",
+    "tidy_failed": "Couldn't tidy this page: {reason}.",
     "reader_empty": (
         "Couldn't find the article text on this page. "
         "Try the original page instead."
@@ -1429,6 +1461,29 @@ def reader_from_browser():
     return render_reader(page_html, url, None, strings)
 
 
+@app.route("/reader/tidy", methods=["POST"])
+def reader_tidy():
+    """AI tidy for the article shown in Reader view (see tidy.py)."""
+    if not tidy.enabled():
+        return flask.jsonify(error="AI tidy isn't set up on this server"), 404
+    # JSON only, and only from this server's own pages: a JSON post from
+    # another site needs a CORS preflight, which this server never approves.
+    origin = request.headers.get("Origin")
+    if not request.is_json or (origin and origin.rstrip("/") != request.host_url.rstrip("/")):
+        return flask.jsonify(error="not allowed"), 403
+    data = request.get_json(silent=True) or {}
+    url = data.get("url") if isinstance(data.get("url"), str) else ""
+    html = data.get("html") if isinstance(data.get("html"), str) else ""
+    if not html:
+        return flask.jsonify(error="nothing to tidy"), 400
+    base = url if re.match(r"^https?://", url, re.I) else request.host_url
+    try:
+        result = tidy.tidy(str(reader.clean_fragment(html, base)))
+    except tidy.TidyError as error:
+        return flask.jsonify(error=str(error)), 502
+    return flask.jsonify(result)
+
+
 def render_reader(page_html, url, original_href, strings):
     try:
         article = reader.extract_article(page_html, url)
@@ -1443,6 +1498,8 @@ def render_reader(page_html, url, original_href, strings):
         source_url=url,
         original_href=original_href,
         nonce=nonce,
+        tidy_enabled=tidy.enabled(),
+        tidy_strings={key[len("tidy_"):]: value for key, value in strings.items() if key.startswith("tidy_")},
         **strings,
     )
     response = Response(body, mimetype="text/html")

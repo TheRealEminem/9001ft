@@ -9,3 +9,8 @@ services:
       # Only this machine can reach it: anyone who can reach it can fetch any
       # page through it. 5013 because macOS AirPlay Receiver holds port 5000.
       - "127.0.0.1:5013:5000"
+    # Optional settings such as AI tidy (see README). Inside Docker, reach a
+    # model running on your computer at http://host.docker.internal:11434/v1.
+    env_file:
+      - path: .env.local
+        required: false
