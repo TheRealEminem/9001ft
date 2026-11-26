@@ -11,11 +11,18 @@ The choice is saved to settings.json in the data folder (LADDER_DATA_DIR,
 default: data/ next to app/), readable only by you. When there is no saved
 choice, the TIDY_* environment variables (or .env.local) are used instead.
 API keys are never sent back to the browser.
+
+Each save from the page keeps the settings it replaced in
+settings-history.json (also readable only by you, last HISTORY_SIZE saves), so
+"Undo last save" can put them back. Undoing the first save after using
+environment settings deletes settings.json, which returns to .env.local.
 """
 
 import json
 import os
 import tempfile
+import threading
+import time
 from dataclasses import dataclass
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
@@ -41,6 +48,11 @@ PROVIDERS = {
 }
 
 MODES = ("off", "local", "byok")
+# What Reader view does with AI tidy when an AI is set up:
+#   suggest  show a prominent "Tidy this up?" offer (default)
+#   auto     tidy archived or messy pages automatically, with Show original
+#   off      only the toolbar button
+TIDY_MODES = ("suggest", "auto", "off")
 REASONING = ("", "none", "low", "medium", "high")
 
 
@@ -79,20 +91,129 @@ def load():
     return ai if isinstance(ai, dict) and ai.get("mode") in MODES else None
 
 
-def save(ai):
-    """Write settings atomically, readable only by this user."""
-    folder = data_dir()
+def _write_private(path, data):
+    """Write JSON atomically, readable only by this user."""
+    folder = os.path.dirname(path)
     os.makedirs(folder, mode=0o700, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=folder, prefix=".settings-", suffix=".json")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump({"ai": ai}, handle, indent=2)
+            json.dump(data, handle, indent=2)
         os.chmod(tmp, 0o600)
-        os.replace(tmp, settings_path())
+        os.replace(tmp, path)
     except BaseException:
         if os.path.exists(tmp):
             os.remove(tmp)
         raise
+
+
+def save(ai, saved_at=None):
+    """Write settings atomically, readable only by this user."""
+    _write_private(settings_path(), {"ai": ai, "saved_at": saved_at or time.time()})
+
+
+# --- undo: the settings each save replaced -----------------------------------
+
+HISTORY_SIZE = 5
+_history_lock = threading.Lock()
+
+
+def history_path():
+    return os.path.join(data_dir(), "settings-history.json")
+
+
+def _saved_at():
+    """When the current settings.json was saved (older files: its mtime)."""
+    try:
+        with open(settings_path(), encoding="utf-8") as handle:
+            stamp = json.load(handle).get("saved_at")
+        if isinstance(stamp, (int, float)):
+            return float(stamp)
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        return os.path.getmtime(settings_path())
+    except OSError:
+        return None
+
+
+def _read_history():
+    try:
+        with open(history_path(), encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    versions = [v for v in data.get("versions") or [] if isinstance(v, dict) and v.get("kind") in ("settings", "env", "none")]
+    redo = data.get("redo") if isinstance(data.get("redo"), dict) else None
+    return {"versions": versions[-HISTORY_SIZE:], "redo": redo}
+
+
+def _current_state():
+    """The settings in use now, as a history entry."""
+    ai = load()
+    if ai is not None:
+        return {"kind": "settings", "ai": ai, "saved_at": _saved_at()}
+    return {"kind": "env" if _env_backends() else "none", "ai": None, "saved_at": None}
+
+
+def _restore(entry):
+    if entry["kind"] == "settings" and isinstance(entry.get("ai"), dict):
+        save(entry["ai"], saved_at=entry.get("saved_at"))
+    elif os.path.exists(settings_path()):
+        os.remove(settings_path())
+
+
+def commit(ai):
+    """Save settings from the page, remembering the ones they replace.
+    Returns False (and keeps no history entry) when nothing changed."""
+    with _history_lock:
+        current = _current_state()
+        if current["ai"] == ai:
+            return False
+        history = _read_history()
+        history["versions"] = (history["versions"] + [current])[-HISTORY_SIZE:]
+        history["redo"] = None
+        _write_private(history_path(), history)
+        save(ai)
+        return True
+
+
+def undo(redo=False):
+    """Put back the settings the last save replaced (or, with redo, the ones
+    the last undo took away). Raises ValueError when there's nothing to do."""
+    with _history_lock:
+        history = _read_history()
+        if redo:
+            entry = history["redo"]
+            if not entry:
+                raise ValueError("nothing to redo")
+            history["versions"] = (history["versions"] + [_current_state()])[-HISTORY_SIZE:]
+            history["redo"] = None
+        else:
+            if not history["versions"]:
+                raise ValueError("nothing to undo")
+            entry = history["versions"].pop()
+            history["redo"] = _current_state()
+        _write_private(history_path(), history)
+        _restore(entry)
+
+
+def history_view():
+    """What the page may know about the history: kinds and ages, never keys."""
+    history = _read_history()
+    now = time.time()
+
+    def describe(entry):
+        if not entry:
+            return None
+        stamp = entry.get("saved_at")
+        age = max(0, int(now - stamp)) if isinstance(stamp, (int, float)) else None
+        return {"kind": entry["kind"], "age": age}
+
+    return {"undo": describe(history["versions"][-1] if history["versions"] else None),
+            "undo_count": len(history["versions"]), "redo": describe(history["redo"])}
 
 
 # --- turning settings into services to call ---------------------------------
@@ -166,6 +287,14 @@ def backends_for(ai):
     return [backend for backend in found if backend]
 
 
+def tidy_mode():
+    """Reader view's AI tidy behaviour (see TIDY_MODES). Saved settings win,
+    then the TIDY_MODE environment variable, then "suggest"."""
+    saved = (load() or {}).get("tidy_mode")
+    mode = saved or os.environ.get("TIDY_MODE", "").strip().lower() or "suggest"
+    return mode if mode in TIDY_MODES else "suggest"
+
+
 def backends():
     ai = load()
     return backends_for(ai) if ai is not None else _env_backends()
@@ -195,7 +324,9 @@ def public_view():
     view = {k: v for k, v in ai.items() if k != "keys"}
     view["keys"] = {provider: _key_hint(entry) for provider, entry in (ai.get("keys") or {}).items() if _key_hint(entry)}
     view.setdefault("ollama_url", DEFAULT_OLLAMA_URL)
+    view.setdefault("tidy_mode", tidy_mode())
     view["source"] = source()
+    view.update(history_view())
     return view
 
 
@@ -220,7 +351,8 @@ def _settings_from_env():
 
 
 def merge_draft(draft, keep_saved_keys=True):
-    """Validate a settings draft from the page. A blank key keeps the saved one."""
+    """Validate a settings draft from the page. A blank key keeps the saved one;
+    only "clear_key": true (exactly) removes it."""
     current = load() or _settings_from_env()
     mode = draft.get("mode") if draft.get("mode") in MODES else "off"
     provider = draft.get("provider") if draft.get("provider") in PROVIDERS else current.get("provider", "anthropic")
@@ -236,7 +368,7 @@ def merge_draft(draft, keep_saved_keys=True):
     new_key = str(draft.get("key") or "").strip()
     if new_key:
         keys[provider] = {"key": new_key}
-    elif draft.get("clear_key"):
+    elif draft.get("clear_key") is True:
         keys.pop(provider, None)
 
     models = dict(current.get("models") or {})
@@ -250,6 +382,7 @@ def merge_draft(draft, keep_saved_keys=True):
         "fallback_local": bool(draft.get("fallback_local")),
         "ollama_url": ollama_url, "ollama_model": str(draft.get("ollama_model") or "").strip(),
         "local_reasoning": local_reasoning,
+        "tidy_mode": draft.get("tidy_mode") if draft.get("tidy_mode") in TIDY_MODES else current.get("tidy_mode", "suggest"),
     }
 
 

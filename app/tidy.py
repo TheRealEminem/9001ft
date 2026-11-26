@@ -62,6 +62,9 @@ Rules: ids in each entry must be next to each other, in order. Use each id at mo
 Leave out ids that are already fine. When unsure, leave the block out of your answer."""
 
 
+RETRY_REMINDER = "\n\nReply with the JSON object only, exactly in the format described, and nothing else."
+
+
 class TidyError(Exception):
     """Something the person should see, in plain words."""
 
@@ -397,9 +400,17 @@ def tidy(fragment_html):
         raise TidyError("this page is too long to tidy")
 
     started = time.time()
-    answer, used = first_answer(available, SYSTEM_PROMPT, "\n".join(_preview(block) for block in blocks))
+    user = "\n".join(_preview(block) for block in blocks)
+    answer, used = first_answer(available, SYSTEM_PROMPT, user)
+    try:
+        entries = parse_plan(answer)
+    except TidyError:
+        # Models occasionally wrap or garble the JSON. Ask once more, firmly,
+        # from the service that answered, before giving up.
+        answer, used = first_answer([used], SYSTEM_PROMPT, user + RETRY_REMINDER)
+        entries = parse_plan(answer)
 
-    groups, stats = apply_plan(blocks, parse_plan(answer))
+    groups, stats = apply_plan(blocks, entries)
     html, stats["lists"] = render(groups)
 
     # By construction only dropped blocks lose words. Check it anyway.

@@ -196,6 +196,33 @@ def _climber(x, y):
     )
 
 
+def duster_svg():
+    """Grandma with a feather duster, for Reader view's AI tidy card."""
+    feathers = "".join(
+        f'<ellipse cx="{x}" cy="{y}" rx="4.6" ry="10" transform="rotate({angle} {x} {y})" '
+        f'fill="{color}" stroke="{INK}" stroke-width="2"/>'
+        for x, y, angle, color in ((100, 17, 15, ORANGE), (112, 23, 75, ORANGE), (104, 13, 35, YELLOW), (111, 17, 55, YELLOW))
+    )
+    star = "M0,-6 L1.6,-1.6 L6,0 L1.6,1.6 L0,6 L-1.6,1.6 L-6,0 L-1.6,-1.6 Z"
+    sparkles = "".join(
+        f'<g transform="translate({x} {y}) scale({scale})"><path class="sparkle sparkle-{i}" d="{star}" '
+        f'fill="{YELLOW}" stroke="{INK}" stroke-width="{round(1.4 / scale, 2)}" stroke-linejoin="round"/></g>'
+        for i, (x, y, scale) in enumerate(((124, 8, 1.0), (88, 9, 0.7), (126, 34, 0.8)))
+    )
+    return (
+        '<svg class="tidy-art" viewBox="22 0 112 78" aria-hidden="true" focusable="false" '
+        'xmlns="http://www.w3.org/2000/svg">'
+        f'<path d="M34,80 Q35,55 57,52 Q78,55 80,80 Z" fill="{RED}" stroke="{INK}" stroke-width="2.5" stroke-linejoin="round"/>'
+        '<g class="duster">'
+        f'<path d="M86,46 L103,24" stroke="{INK}" stroke-width="6" stroke-linecap="round"/>'
+        f'<path d="M86,46 L103,24" stroke="{ORANGE}" stroke-width="2.5" stroke-linecap="round"/>'
+        + feathers + "</g>"
+        + _limb("M70,64 Q84,66 86,49") + _mitt(86, 46, 35)
+        + _head() + sparkles
+        + "</svg>"
+    )
+
+
 def scene_svg(fraction=0.0):
     """The whole scene. `fraction` is how far up the climber starts (0..1)."""
     x, y = climber_position(fraction)

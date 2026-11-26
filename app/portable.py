@@ -1,4 +1,5 @@
 import html as html_lib
+from datetime import datetime
 import json
 import os
 import flask
@@ -122,10 +123,24 @@ _DEFAULT_STRINGS = {
     "connection_error": "Could not connect to the website. Check the URL and try again.",
     "request_error": "Failed to fetch the page.",
     "unexpected_error": "Unexpected error while fetching the page.",
-    "reader_checkbox": "Open in Reader view",
+    "reader_checkbox": "Open in Reader view (recommended)",
+    "reader_checkbox_hint": "Clean and easy to read. Untick for the full original layout.",
     "reader_button": "Reader view",
-    "reader_original": "Original page",
-    "reader_source": "Source",
+    "reader_original": "Full page",
+    "reader_original_title": "The whole page as fetched, with its layout and scripts",
+    "reader_source": "Live page",
+    "reader_source_title": "Opens the real page in a new tab, with all its animations and interactive parts",
+    "source_live": "From the live site",
+    "source_site": "From the website",
+    "source_archive_org": "From archive.org's copy of {date}",
+    "source_archive_org_undated": "From archive.org's copy",
+    "source_archive_today": "From archive.today's copy",
+    "source_freedium": "From Freedium (a Medium mirror)",
+    "source_browser": "From your browser",
+    "source_archive_note": "Some pictures or styling may be missing.",
+    "interactive_note": "This article has interactive graphics that Reader view can't show.",
+    "interactive_live": "See them on the live page",
+    "interactive_full": "Open the full page",
     "reader_minutes": "{minutes} min read",
     "reader_smaller": "Smaller text",
     "reader_larger": "Larger text",
@@ -148,6 +163,25 @@ _DEFAULT_STRINGS = {
     "tidy_show_original": "Show original",
     "tidy_show_tidy": "Show tidied",
     "tidy_failed": "Couldn't tidy this page: {reason}.",
+    "tidy_kept_original": "The original is still here, untouched.",
+    "tidy_card_title": "A bit jumbled?",
+    "tidy_card_archive": (
+        "This page came from an archive copy and may look a bit jumbled. Want AI to tidy "
+        "the layout? It only rearranges; it never changes the words."
+    ),
+    "tidy_card_jumbled": (
+        "This page looks a bit jumbled. Want AI to tidy the layout? "
+        "It only rearranges; it never changes the words."
+    ),
+    "tidy_card_gentle": "Looks messy?",
+    "tidy_card_gentle_button": "Tidy up with AI",
+    "tidy_card_yes": "Tidy it up",
+    "tidy_card_no": "No thanks",
+    "tidy_card_retry": "Try again",
+    "tidy_card_working_title": "Tidying up\u2026",
+    "tidy_card_done_title": "All tidy!",
+    "tidy_card_failed_title": "That didn't work",
+    "tidy_auto_done": "Tidied automatically by AI",
     "listen_button": "Read aloud",
     "listen_controls": "Read aloud controls",
     "listen_play": "Play",
@@ -180,7 +214,7 @@ _DEFAULT_STRINGS = {
     "settings_link": "AI settings (optional)",
     "reader_empty": (
         "Couldn't find the article text on this page. "
-        "Try the original page instead."
+        "Try the full page instead:"
     ),
     "keep_button": "Keep a copy",
     "library_link": "Your library",
@@ -492,7 +526,9 @@ html = """
             cursor: pointer;
         }
 
-        .reader-option input { width: 17px; height: 17px; margin: 0; accent-color: var(--red); }
+        .reader-option input { flex: none; width: 17px; height: 17px; margin: 0; accent-color: var(--red); }
+
+        .reader-hint { display: block; margin-top: 2px; font-size: 12.5px; color: var(--muted); }
 
         .dark-mode-toggle {
             position: absolute;
@@ -785,7 +821,9 @@ html = """
             <label for="link">{{ label }}</label>
             <input type="text" id="link" name="link" required autofocus>
             <label class="reader-option" for="reader-mode">
-                <input type="checkbox" id="reader-mode"> {{ reader_checkbox }}
+                <input type="checkbox" id="reader-mode" checked aria-describedby="reader-hint">
+                <span>{{ reader_checkbox }}
+                    <small class="reader-hint" id="reader-hint">{{ reader_checkbox_hint }}</small></span>
             </label>
             <input type="submit" value="{{ submit }}">
         </form>
@@ -851,7 +889,8 @@ html = """
         });
 
         const readerToggle = byId('reader-mode');
-        readerToggle.checked = store.get('readerMode') === '1';
+        // Reader view unless the person has unticked it before.
+        readerToggle.checked = store.get('readerMode') !== '0';
         readerToggle.addEventListener('change', function () {
             store.set('readerMode', this.checked ? '1' : '0');
         });
@@ -1639,6 +1678,85 @@ def fetch_via_archive_ph(url, job_id=None):
     return None, None
 
 
+# Where each page came from: "live" (the site, asked as an ordinary browser),
+# "site" (the site, asked the way a search crawler does), "archive.org" (with
+# the snapshot's date), "archive.today", "freedium", or "browser" (sent by the
+# bookmarklet; nothing was fetched). bypass_paywall() returns only the HTML, so
+# it leaves the source here, keyed like the page cache, for whoever asked to
+# pick up with take_source() and keep beside the cached page.
+ARCHIVE_SOURCES = ("archive.org", "archive.today")
+_fetched_sources = {}
+_fetched_sources_lock = threading.Lock()
+_FETCHED_SOURCES_MAX = 200
+
+
+def page_source(kind, final_url=""):
+    source = {"kind": kind}
+    if kind == "archive.org":
+        wayback = parse_wayback_url(final_url)
+        stamp = wayback[0] if wayback else ""
+        try:
+            source["date"] = datetime.strptime(stamp[:8], "%Y%m%d").date().isoformat() if len(stamp) >= 8 else ""
+        except ValueError:
+            source["date"] = ""
+    return source
+
+
+def record_source(url, source):
+    with _fetched_sources_lock:
+        if len(_fetched_sources) >= _FETCHED_SOURCES_MAX:
+            _fetched_sources.clear()
+        _fetched_sources[normalize_cache_url(url)] = source
+
+
+def take_source(url):
+    """The source of the latest fetch of `url`, or None (for example in tests
+    that replace the fetch). Each record is handed out once."""
+    with _fetched_sources_lock:
+        return _fetched_sources.pop(normalize_cache_url(url), None)
+
+
+def source_label(source, strings):
+    """(badge text, extra note) for Reader view; ("", "") when unknown."""
+    kind = (source or {}).get("kind")
+    note = strings["source_archive_note"] if kind in ARCHIVE_SOURCES else ""
+    if kind == "archive.org":
+        try:
+            date = datetime.strptime(source.get("date") or "", "%Y-%m-%d")
+            return strings["source_archive_org"].replace("{date}", f"{date.day} {date:%B} {date.year}"), note
+        except ValueError:
+            return strings["source_archive_org_undated"], note
+    key = {"live": "source_live", "site": "source_site", "archive.today": "source_archive_today",
+           "freedium": "source_freedium", "browser": "source_browser"}.get(kind)
+    return (strings[key], note) if key else ("", "")
+
+
+# A live page is used only when Reader view finds a whole article in it. Shorter
+# than this is usually a teaser, a sign-in page or a cookie notice.
+LIVE_ARTICLE_MIN_CHARS = 1500
+
+
+def fetch_live(url):
+    """Ask the site for the page the way an ordinary browser does. Returns
+    (html, final_url) when a full article came back, else (None, None)."""
+    try:
+        response = requests.get(url, headers=REAL_BROWSER_HEADERS, timeout=15)
+    except requests.exceptions.RequestException:
+        return None, None
+    if response.status_code != 200:
+        return None, None
+    response.encoding = response.apparent_encoding
+    text = response.text
+    if not isinstance(text, str) or not text or is_challenge_page(text):
+        return None, None
+    try:
+        if reader.extract_article(text, response.url)["chars"] < LIVE_ARTICLE_MIN_CHARS:
+            return None, None
+    except Exception:
+        return None, None
+    return text, response.url
+
+
 def bypass_paywall(url, strings, job_id=None):
     set_step(job_id, 'connect')
 
@@ -1648,6 +1766,7 @@ def bypass_paywall(url, strings, job_id=None):
     medium = is_medium_url(url)
     html_text = ""
     final_url = url
+    source_kind = "site"
 
     if medium:
         freedium_html, freedium_final = fetch_via_freedium(url, job_id)
@@ -1655,9 +1774,18 @@ def bypass_paywall(url, strings, job_id=None):
             set_step(job_id, 'process')
             result = process_html_document(freedium_html, freedium_final)
             set_step(job_id, 'cleanup')
+            record_source(url, page_source("freedium"))
             return result
     else:
         set_step(job_id, 'fetch')
+        live_html, live_url = fetch_live(url)
+        if live_html:
+            set_step(job_id, 'process')
+            result = process_html_document(live_html, live_url)
+            set_step(job_id, 'cleanup')
+            record_source(url, page_source("live"))
+            return result
+
         response = requests.get(url, headers=googlebot_headers, timeout=30)
         response.encoding = response.apparent_encoding
         html_text = response.text
@@ -1677,6 +1805,7 @@ def bypass_paywall(url, strings, job_id=None):
         if archived_html and not is_challenge_page(archived_html):
             html_text = archived_html
             final_url = archived_url
+            source_kind = "archive.org"
             recovered = True
 
         if not recovered:
@@ -1684,6 +1813,7 @@ def bypass_paywall(url, strings, job_id=None):
             if archived_html and not is_challenge_page(archived_html):
                 html_text = archived_html
                 final_url = archived_url
+                source_kind = "archive.today"
                 recovered = True
 
         if not recovered:
@@ -1697,6 +1827,7 @@ def bypass_paywall(url, strings, job_id=None):
     result = process_html_document(html_text, final_url)
 
     set_step(job_id, 'cleanup')
+    record_source(url, page_source(source_kind, final_url))
     return result
 
 
@@ -1713,17 +1844,27 @@ def clean_page_cache():
         del page_cache[k]
 
 
+def cache_page(url, page_html):
+    """Keep a fetched page for a few minutes, with where it came from.
+    Challenge and error pages are never kept."""
+    key = normalize_cache_url(url)
+    source = take_source(url)
+    if not is_challenge_page(page_html):
+        with page_cache_lock:
+            clean_page_cache()
+            page_cache[key] = {'html': page_html, 'timestamp': time.time(), 'source': source}
+    return key
+
+
+def cached_source(url):
+    with page_cache_lock:
+        return (page_cache.get(normalize_cache_url(url)) or {}).get("source")
+
+
 def fetch_worker(job_id, url, strings):
     try:
         result = bypass_paywall(url, strings, job_id)
-        # Never cache challenge/error pages — only store clean article HTML.
-        if not is_challenge_page(result):
-            cache_key = normalize_cache_url(url)
-            with page_cache_lock:
-                clean_page_cache()
-                page_cache[cache_key] = {'html': result, 'timestamp': time.time()}
-        else:
-            cache_key = normalize_cache_url(url)
+        cache_key = cache_page(url, result)
         with jobs_lock:
             jobs[job_id]['result'] = cache_key
             jobs[job_id]['step'] = 'done'
@@ -1948,7 +2089,7 @@ _FLOATING_LINK_STYLE = (
     "border-radius:999px;box-shadow:0 4px 14px rgba(0,0,0,.28);"
 )
 READER_BUTTON = (
-    '<div id="ladder-buttons" style="all:initial;position:fixed;right:16px;bottom:16px;z-index:2147483647;'
+    '<div id="ladder-buttons" data-source="{source}" style="all:initial;position:fixed;right:16px;bottom:16px;z-index:2147483647;'
     'display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">'
     '<a id="ladder-keep-btn" href="{keep_href}" style="' + _FLOATING_LINK_STYLE + 'background:#9b4dca">'
     '&#128204; {keep_label}</a>'
@@ -1957,7 +2098,7 @@ READER_BUTTON = (
 )
 
 
-def finalize_page(page_html, url, strings):
+def finalize_page(page_html, url, strings, source=None):
     """Last step before serving a fetched page: point relay links at this
     server, add the Reader view button (both need this server's address, which
     only the request knows, so the cached copy stays without them) and sandbox
@@ -1966,6 +2107,7 @@ def finalize_page(page_html, url, strings):
     href = request.host_url + "reader/" + url
     keep_href = request.host_url + "library/save?url=" + quote(url, safe="")
     button = READER_BUTTON.format(
+        source=html_lib.escape((source or {}).get("kind", ""), quote=True),
         href=html_lib.escape(href, quote=True), label=html_lib.escape(strings["reader_button"]),
         keep_href=html_lib.escape(keep_href, quote=True), keep_label=html_lib.escape(strings["keep_button"]))
     end = page_html.lower().rfind("</body>")
@@ -2274,10 +2416,7 @@ def get_page(url, strings):
     if cached and time.time() - cached["timestamp"] <= PAGE_CACHE_TTL:
         return cached["html"]
     result = bypass_paywall(url, strings)
-    if not is_challenge_page(result):
-        with page_cache_lock:
-            clean_page_cache()
-            page_cache[key] = {"html": result, "timestamp": time.time()}
+    cache_page(url, result)
     return result
 
 
@@ -2309,7 +2448,7 @@ def reader_view(path):
     except Exception:
         return error_page(strings["unexpected_error"], 500, strings)
 
-    return render_reader(page_html, url, "/" + url, strings)
+    return render_reader(page_html, url, "/" + url, strings, source=cached_source(url))
 
 
 @app.route("/reader", methods=["POST"])
@@ -2321,7 +2460,7 @@ def reader_from_browser():
     url = request.form.get("url", "").strip()
     if not page_html or not re.match(r"^https?://", url, re.I):
         return error_page(strings["invalid_url"], 400, strings)
-    return render_reader(page_html, url, None, strings)
+    return render_reader(page_html, url, None, strings, source=page_source("browser"))
 
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
@@ -2390,9 +2529,25 @@ def settings_ai():
         return flask.jsonify(error=problem), 403
     if request.method == "POST":
         try:
-            ai_settings.save(ai_settings.merge_draft(request.get_json(silent=True) or {}))
+            ai_settings.commit(ai_settings.merge_draft(request.get_json(silent=True) or {}))
         except ValueError as error:
             return flask.jsonify(error=str(error)), 400
+    response = flask.jsonify(ai_settings.public_view())
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.route("/settings/ai/undo", methods=["POST"])
+def settings_ai_undo():
+    """Put back the settings the last save replaced ({"redo": true}: undo the undo)."""
+    problem = local_request_problem(json_only=True)
+    if problem:
+        return flask.jsonify(error=problem), 403
+    data = request.get_json(silent=True)
+    try:
+        ai_settings.undo(redo=isinstance(data, dict) and data.get("redo") is True)
+    except ValueError as error:
+        return flask.jsonify(error=str(error)), 409
     response = flask.jsonify(ai_settings.public_view())
     response.headers["Cache-Control"] = "no-store"
     return response
@@ -2474,7 +2629,19 @@ def reader_export():
     return response
 
 
-def render_reader(page_html, url, original_href, strings, article=None):
+def tidy_offer(mode, source, article):
+    """How Reader view offers AI tidy: {"size": "big" or "small", "reason":
+    "archive", "jumbled" or "", "auto": start by itself}, or None for only the
+    toolbar button. Archive copies and jumbled-looking articles get the big
+    card, and in "auto" mode are tidied as the page opens."""
+    if mode not in ("suggest", "auto") or not article.get("content"):
+        return None
+    archived = (source or {}).get("kind") in ARCHIVE_SOURCES
+    reason = "archive" if archived else "jumbled" if article.get("jumbled") else ""
+    return {"size": "big" if reason else "small", "reason": reason, "auto": mode == "auto" and bool(reason)}
+
+
+def render_reader(page_html, url, original_href, strings, article=None, source=None):
     kept = article is not None  # the Reader version of a library copy
     try:
         article = article if kept else reader.extract_article(page_html, url)
@@ -2482,6 +2649,9 @@ def render_reader(page_html, url, original_href, strings, article=None):
         article = {"title": url, "site": "", "author": "", "published": "",
                    "minutes": 0, "lead_image": "", "content": ""}
 
+    tidy_enabled = tidy.enabled()
+    tidy_mode = ai_settings.tidy_mode() if tidy_enabled else "off"
+    source_text, source_note = source_label(source, strings)
     nonce = secrets.token_urlsafe(16)
     body = flask.render_template_string(
         reader.READER_TEMPLATE,
@@ -2490,7 +2660,13 @@ def render_reader(page_html, url, original_href, strings, article=None):
         source_url=url,
         original_href=original_href,
         nonce=nonce,
-        tidy_enabled=tidy.enabled(),
+        tidy_enabled=tidy_enabled,
+        tidy_mode=tidy_mode,
+        tidy_offer=tidy_offer(tidy_mode, source, article) if tidy_enabled else None,
+        tidy_art=climb.duster_svg(),
+        page_source=(source or {}).get("kind", ""),
+        source_text=source_text,
+        source_note=source_note,
         keep_href=None if kept else keep_copy_href(page_html, url, original_href),
         tidy_strings={key[len("tidy_"):]: value for key, value in strings.items() if key.startswith("tidy_")},
         **strings,
@@ -2505,7 +2681,8 @@ def show_article():
     link = flask.request.form["link"]
     strings = load_strings()
     try:
-        return finalize_page(bypass_paywall(link, strings), link, strings)
+        page_html = bypass_paywall(link, strings)
+        return finalize_page(page_html, link, strings, take_source(link))
     except requests.exceptions.Timeout:
         return error_page(strings["timeout_error"], 400, strings)
     except requests.exceptions.ConnectionError:
@@ -2530,10 +2707,11 @@ def get_article(path):
         with page_cache_lock:
             cached = page_cache.get(actual_url)
         if cached:
-            return finalize_page(cached['html'], actual_url, strings)
+            return finalize_page(cached['html'], actual_url, strings, cached.get('source'))
 
         try:
-            return finalize_page(bypass_paywall(actual_url, strings), actual_url, strings)
+            page_html = bypass_paywall(actual_url, strings)
+            return finalize_page(page_html, actual_url, strings, take_source(actual_url))
         except requests.exceptions.Timeout:
             return error_page(strings["timeout_error"], 400, strings)
         except requests.exceptions.ConnectionError:
