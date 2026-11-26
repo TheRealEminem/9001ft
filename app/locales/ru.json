@@ -11,7 +11,7 @@
   "step_connect": "Подключение к сайту...",
   "step_fetch": "Загрузка содержимого страницы...",
   "step_detect": "Проверка на анти-бот защиты...",
-  "step_fallback_freedium": "Пробуем Freedium (обход Medium)...",
+  "step_fallback_freedium": "Пробуем Freedium (зеркало Medium)...",
   "step_fallback_org": "Пробуем снимок с archive.org...",
   "step_fallback_ph": "Пробуем снимок с archive.today / archive.ph...",
   "step_process": "Обработка статьи...",

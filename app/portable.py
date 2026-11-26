@@ -34,7 +34,7 @@ _DEFAULT_STRINGS = {
     "step_connect": "Connecting to website...",
     "step_fetch": "Downloading page content...",
     "step_detect": "Checking for anti-bot challenges...",
-    "step_fallback_freedium": "Trying Freedium (Medium bypass)...",
+    "step_fallback_freedium": "Trying Freedium (Medium mirror)...",
     "step_fallback_org": "Trying archive.org snapshot...",
     "step_fallback_ph": "Trying archive.today / archive.ph snapshot...",
     "step_process": "Processing article...",
@@ -715,6 +715,22 @@ def render_main_page():
 # archived copy instead. CSS goes through `cs_` so Wayback also rewrites the
 # url() references inside it; scripts and images stay raw (`id_`), because
 # Wayback's rewritten JavaScript only runs with its own toolbar loaded.
+#
+# Fonts and CSS mask images (most icon sets) are only usable cross-origin when
+# the server sends Access-Control-Allow-Origin, and archive.org doesn't. So
+# stylesheets, <style> blocks and font preloads go through this server's
+# /_relay/ route, which fetches them from archive.org and adds that header.
+# process_html_document doesn't know this server's address (and the page's
+# <base> points at archive.org), so it writes RELAY_TOKEN and finalize_page
+# swaps in the real address when the page is served.
+
+RELAY_TOKEN = "__9001FT_RELAY__/"
+RELAY_TARGET_RE = re.compile(r"^https://web\.archive\.org/web/\d{1,14}[a-z]{0,2}_?/https?://", re.I)
+RELAY_CONTENT_TYPES = (
+    "text/css", "font/", "image/", "application/font", "application/x-font",
+    "application/vnd.ms-fontobject", "application/octet-stream",
+)
+RELAY_MAX_BYTES = 15 * 1024 * 1024
 
 WAYBACK_SNAPSHOT_RE = re.compile(r"^https?://web\.archive\.org/web/(\d{1,14})(?:[a-z]{2}_)?/(.+)$", re.I)
 
@@ -786,15 +802,34 @@ def _rewrite_srcset(value, timestamp, page_url):
     return ", ".join(rewritten)
 
 
-def _rewrite_css(css, timestamp, page_url):
+def _relayed(url):
+    """Send an archive.org URL through this server's relay (see RELAY_TOKEN)."""
+    return RELAY_TOKEN + url if RELAY_TARGET_RE.match(url) else url
+
+
+def _rewrite_css(css, timestamp, page_url, relay=False):
+    wrap = _relayed if relay else (lambda url: url)
     css = CSS_IMPORT_RE.sub(
-        lambda m: f"@import {m.group(1)}{_archived_url(m.group(2), timestamp, 'cs_', page_url)}{m.group(1)}",
+        lambda m: f"@import {m.group(1)}{wrap(_archived_url(m.group(2), timestamp, 'cs_', page_url))}{m.group(1)}",
         css,
     )
     return CSS_URL_RE.sub(
-        lambda m: f"url({m.group(1)}{_archived_url(m.group(2), timestamp, 'id_', page_url)}{m.group(1)})",
+        lambda m: f"url({m.group(1)}{wrap(_archived_url(m.group(2), timestamp, 'id_', page_url))}{m.group(1)})",
         css,
     )
+
+
+def relay_css(css, css_url):
+    """Rewrite a relayed stylesheet so everything it loads also comes through
+    the relay. It's served from this server, so root-relative /_relay/ works."""
+    def relay_ref(value):
+        absolute = _absolute_url(value, css_url)
+        if absolute and RELAY_TARGET_RE.match(absolute):
+            return "/_relay/" + absolute
+        return absolute or value
+
+    css = CSS_IMPORT_RE.sub(lambda m: f"@import {m.group(1)}{relay_ref(m.group(2))}{m.group(1)}", css)
+    return CSS_URL_RE.sub(lambda m: f"url({m.group(1)}{relay_ref(m.group(2))}{m.group(1)})", css)
 
 
 def rewrite_wayback_snapshot(soup, timestamp, page_url):
@@ -817,12 +852,14 @@ def rewrite_wayback_snapshot(soup, timestamp, page_url):
 
     for link in soup.find_all("link", href=True):
         rel = [r.lower() for r in (link.get("rel") or [])]
-        is_css = "stylesheet" in rel or (link.get("as") or "").lower() == "style"
-        link["href"] = _archived_url(link["href"], timestamp, "cs_" if is_css else "id_", page_url)
+        kind = (link.get("as") or "").lower()
+        is_css = "stylesheet" in rel or kind == "style"
+        archived = _archived_url(link["href"], timestamp, "cs_" if is_css else "id_", page_url)
+        link["href"] = _relayed(archived) if is_css or kind == "font" else archived
 
     for style in soup.find_all("style"):
         if style.string:
-            style.string = _rewrite_css(style.string, timestamp, page_url)
+            style.string = _rewrite_css(style.string, timestamp, page_url, relay=True)
     for element in soup.find_all(style=True):
         element["style"] = _rewrite_css(element["style"], timestamp, page_url)
 
@@ -1268,7 +1305,11 @@ READER_BUTTON = (
 )
 
 
-def with_reader_button(page_html, url, strings):
+def finalize_page(page_html, url, strings):
+    """Last step before serving a fetched page: point relay links at this
+    server and add the Reader view button. Both need this server's address,
+    which only the request knows, so the cached copy stays without them."""
+    page_html = page_html.replace(RELAY_TOKEN, request.host_url + "_relay/")
     href = request.host_url + "reader/" + url
     button = READER_BUTTON.format(href=html_lib.escape(href, quote=True), label=html_lib.escape(strings["reader_button"]))
     end = page_html.lower().rfind("</body>")
@@ -1277,8 +1318,61 @@ def with_reader_button(page_html, url, strings):
     return page_html[:end] + button + page_html[end:]
 
 
+def relay_target_url(full_url):
+    """'http://host/_relay/https://web.archive.org/web/...' -> the archive.org
+    URL, or None if it isn't an archive.org snapshot asset."""
+    parts = full_url.split("/", 3)
+    if len(parts) < 4 or not parts[3].startswith("_relay/"):
+        return None
+    target = parts[3][len("_relay/"):]
+    # Some clients collapse "//" in paths; put the schemes back together.
+    target = re.sub(r"^https?:/+", "https://", target, flags=re.I)
+    target = re.sub(r"(/web/\d{1,14}[a-z]{0,2}_?/)(https?:)/+", r"\1\2//", target, flags=re.I)
+    return target if RELAY_TARGET_RE.match(target) else None
+
+
+@app.route("/_relay/<path:path>", methods=["GET"])
+def relay(path):
+    """Serve a stylesheet, font or image from archive.org with the CORS header
+    archive.org leaves off. Only archive.org snapshot URLs, only those types."""
+    target = relay_target_url(request.url)
+    if not target:
+        return "", 404
+    try:
+        upstream = requests.get(target, headers=REAL_BROWSER_HEADERS, timeout=20, stream=True)
+    except requests.exceptions.RequestException:
+        return "", 502
+    with upstream:
+        content_type = (upstream.headers.get("Content-Type") or "application/octet-stream").split(";")[0].strip().lower()
+        if (upstream.status_code != 200
+                or (urlparse(upstream.url).hostname or "").lower() != "web.archive.org"
+                or not content_type.startswith(RELAY_CONTENT_TYPES)):
+            return "", 404
+        chunks, size = [], 0
+        for chunk in upstream.iter_content(64 * 1024):
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > RELAY_MAX_BYTES:
+                return "", 413
+        body = b"".join(chunks)
+        final_url = upstream.url
+        encoding = upstream.encoding
+
+    if content_type == "text/css":
+        body = relay_css(body.decode(encoding or "utf-8", errors="replace"), final_url).encode("utf-8")
+        content_type = "text/css; charset=utf-8"
+
+    response = Response(body, content_type=content_type)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Cache-Control"] = "public, max-age=86400"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    # Nothing relayed is meant to be opened as a page; if it is, it can't run.
+    response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+    return response
+
+
 def get_page(url, strings):
-    """Fetch a page through the bypass, reusing the short-lived page cache."""
+    """Fetch a page, reusing the short-lived page cache."""
     key = normalize_cache_url(url)
     with page_cache_lock:
         cached = page_cache.get(key)
@@ -1361,7 +1455,7 @@ def show_article():
     link = flask.request.form["link"]
     strings = load_strings()
     try:
-        return with_reader_button(bypass_paywall(link, strings), link, strings)
+        return finalize_page(bypass_paywall(link, strings), link, strings)
     except requests.exceptions.Timeout:
         return strings["timeout_error"], 400
     except requests.exceptions.ConnectionError:
@@ -1386,10 +1480,10 @@ def get_article(path):
         with page_cache_lock:
             cached = page_cache.get(actual_url)
         if cached:
-            return with_reader_button(cached['html'], actual_url, strings)
+            return finalize_page(cached['html'], actual_url, strings)
 
         try:
-            return with_reader_button(bypass_paywall(actual_url, strings), actual_url, strings)
+            return finalize_page(bypass_paywall(actual_url, strings), actual_url, strings)
         except requests.exceptions.Timeout:
             return strings["timeout_error"], 400
         except requests.exceptions.ConnectionError:

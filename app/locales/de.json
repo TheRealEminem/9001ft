@@ -11,7 +11,7 @@
   "step_connect": "Verbindung zur Website wird hergestellt...",
   "step_fetch": "Seiteninhalt wird heruntergeladen...",
   "step_detect": "Es wird nach Anti-Bot-Schutz gesucht...",
-  "step_fallback_freedium": "Freedium wird versucht (Medium-Umgehung)...",
+  "step_fallback_freedium": "Freedium wird versucht (Medium-Spiegel)...",
   "step_fallback_org": "Es wird ein archive.org-Schnappschuss versucht...",
   "step_fallback_ph": "Es wird ein archive.today-/archive.ph-Schnappschuss versucht...",
   "step_process": "Artikel wird verarbeitet...",

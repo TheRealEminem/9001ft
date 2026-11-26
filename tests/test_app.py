@@ -1,6 +1,7 @@
 """Offline regression tests. Run: python -m unittest discover -s tests -v."""
 import json
 import os
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -210,9 +211,9 @@ class WaybackRewriteTests(unittest.TestCase):
         self.assertEqual(web.parse_wayback_url(SNAPSHOT), ("20261118081412", "https://en.wikipedia.org/wiki/Ladder"))
         self.assertIsNone(web.parse_wayback_url("https://archive.ph/abc12"))
 
-    def test_stylesheets_use_css_rewriting_mode(self):
+    def test_stylesheets_go_through_relay_in_css_mode(self):
         self.assertEqual(self.soup.find("link", rel="stylesheet")["href"],
-                         "https://web.archive.org/web/20261118081412cs_/https://en.wikipedia.org/w/load.php?modules=site.styles")
+                         web.RELAY_TOKEN + "https://web.archive.org/web/20261118081412cs_/https://en.wikipedia.org/w/load.php?modules=site.styles")
 
     def test_root_relative_assets_point_at_archived_copies(self):
         prefix = "https://web.archive.org/web/20261118081412id_/"
@@ -226,7 +227,9 @@ class WaybackRewriteTests(unittest.TestCase):
         imgs = self.soup.find_all("img")
         self.assertIn("20261118081412id_/https://upload.wikimedia.org/x.jpg", imgs[1]["src"])
         self.assertEqual(imgs[2]["src"], "data:image/gif;base64,R0lGOD")
-        self.assertIn("url('https://web.archive.org/web/20261118081412id_/https://en.wikipedia.org/img/bg.png')", self.soup.style.string)
+        self.assertIn(f"url('{web.RELAY_TOKEN}https://web.archive.org/web/20261118081412id_/https://en.wikipedia.org/img/bg.png')", self.soup.style.string)
+        # Inline style attributes stay direct: plain backgrounds don't need CORS.
+        self.assertNotIn(web.RELAY_TOKEN, self.soup.find("div")["style"])
         self.assertIn("20261118081412id_/https://en.wikipedia.org/wiki/bg2.png", self.soup.find("div")["style"])
 
     def test_page_links_go_to_the_live_site(self):
@@ -237,6 +240,110 @@ class WaybackRewriteTests(unittest.TestCase):
     def test_non_wayback_pages_are_untouched(self):
         soup = web.BeautifulSoup(web.process_html_document(ARCHIVED, URL), "html.parser")
         self.assertEqual(soup.find("script")["src"], "/static/app.js")
+
+
+class PublicWordingTests(unittest.TestCase):
+    """The project never advertises getting around paywalls or similar."""
+    BANNED = re.compile(
+        r"bypass|paywall|circumvent|without (paying|subscribing)|remove\W+.{0,20}wall"
+        r"|umgehung|contournement|回避|우회|绕过|обход|saihesbidea",
+        re.I,
+    )
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def assertClean(self, label, text):
+        match = self.BANNED.search(text)
+        self.assertIsNone(match, f"{label} contains {match.group(0)!r}" if match else "")
+
+    def test_interface_text_in_every_language(self):
+        self.assertClean("default UI strings", json.dumps(web._DEFAULT_STRINGS))
+        for path in sorted((self.ROOT / "app" / "locales").glob("*.json")):
+            self.assertClean(path.name, path.read_text(encoding="utf-8"))
+
+    def test_pages_readme_and_image_labels(self):
+        self.assertClean("home page template", web.html)
+        self.assertClean("reader template", web.reader.READER_TEMPLATE)
+        for name in ("README.md", "Dockerfile", "docker-compose.yaml"):
+            self.assertClean(name, (self.ROOT / name).read_text(encoding="utf-8"))
+
+
+CSS_URL = "https://web.archive.org/web/20261117063225cs_/https://en.wikipedia.org/w/load.php?modules=site.styles"
+RELAYED_CSS = """@font-face { font-family: Serif; src: url(/web/20261117063225im_/https://fonts.example.com/serif.woff2) format('woff2'); }
+.icon { mask-image: url("https://web.archive.org/web/20261117063225im_/https://en.wikipedia.org/icons/eye.svg"); }
+@import "/web/20261117063225cs_/https://en.wikipedia.org/more.css";
+.logo { background: url(data:image/png;base64,AAAA); }"""
+
+
+def upstream_response(body, content_type="text/css", url=CSS_URL, status=200):
+    response = Mock(status_code=status, url=url, encoding="utf-8", headers={"Content-Type": content_type})
+    response.iter_content.return_value = [body]
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    return response
+
+
+class RelayTests(unittest.TestCase):
+    def setUp(self):
+        self.network = patch.object(web.requests.sessions.Session, "request", side_effect=AssertionError("Unexpected network access"))
+        self.network.start()
+        self.addCleanup(self.network.stop)
+        web.page_cache.clear()
+        self.addCleanup(web.page_cache.clear)
+        self.client = web.app.test_client()
+
+    def test_relay_rewrites_css_and_adds_cors(self):
+        with patch.object(web.requests, "get", return_value=upstream_response(RELAYED_CSS.encode())) as get:
+            response = self.client.get("/_relay/" + CSS_URL)
+        get.assert_called_once()
+        self.assertEqual(get.call_args.args[0], CSS_URL)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["Access-Control-Allow-Origin"], "*")
+        self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
+        self.assertTrue(response.content_type.startswith("text/css"))
+        css = response.get_data(as_text=True)
+        self.assertIn("url(/_relay/https://web.archive.org/web/20261117063225im_/https://fonts.example.com/serif.woff2)", css)
+        self.assertIn('url("/_relay/https://web.archive.org/web/20261117063225im_/https://en.wikipedia.org/icons/eye.svg")', css)
+        self.assertIn('@import "/_relay/https://web.archive.org/web/20261117063225cs_/https://en.wikipedia.org/more.css"', css)
+        self.assertIn("url(data:image/png;base64,AAAA)", css)
+
+    def test_relay_passes_fonts_through(self):
+        font_url = "https://web.archive.org/web/20261117063225im_/https://fonts.example.com/serif.woff2"
+        with patch.object(web.requests, "get", return_value=upstream_response(b"wOF2", "font/woff2", font_url)):
+            response = self.client.get("/_relay/" + font_url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, b"wOF2")
+        self.assertEqual(response.headers["Access-Control-Allow-Origin"], "*")
+
+    def test_relay_only_serves_archive_org_snapshots(self):
+        with patch.object(web.requests, "get") as get:
+            self.assertEqual(self.client.get("/_relay/https://example.com/style.css").status_code, 404)
+            self.assertEqual(self.client.get("/_relay/https://web.archive.org/save/https://x.com").status_code, 404)
+        get.assert_not_called()
+
+    def test_relay_refuses_pages_and_off_site_redirects(self):
+        with patch.object(web.requests, "get", return_value=upstream_response(b"<html>", "text/html")):
+            self.assertEqual(self.client.get("/_relay/" + CSS_URL).status_code, 404)
+        with patch.object(web.requests, "get", return_value=upstream_response(b"x", "text/css", "https://evil.example/x.css")):
+            self.assertEqual(self.client.get("/_relay/" + CSS_URL).status_code, 404)
+
+    def test_relay_limits_size(self):
+        big = upstream_response(b"", "image/png")
+        big.iter_content.return_value = [b"x" * (web.RELAY_MAX_BYTES // 2 + 1)] * 2
+        with patch.object(web.requests, "get", return_value=big):
+            self.assertEqual(self.client.get("/_relay/" + CSS_URL).status_code, 413)
+
+    def test_served_pages_point_relay_at_this_server(self):
+        page = f'<html><head><link rel="stylesheet" href="{web.RELAY_TOKEN}{CSS_URL}"></head><body>Hi</body></html>'
+        web.page_cache[URL] = {"html": page, "timestamp": web.time.time()}
+        body = self.client.get("/" + URL).get_data(as_text=True)
+        self.assertNotIn(web.RELAY_TOKEN, body)
+        self.assertIn(f'href="http://localhost/_relay/{CSS_URL}"', body)
+
+    def test_relay_target_url(self):
+        self.assertEqual(web.relay_target_url("http://h/_relay/" + CSS_URL), CSS_URL)
+        collapsed = CSS_URL.replace("https://", "https:/")
+        self.assertEqual(web.relay_target_url("http://h/_relay/" + collapsed), CSS_URL)
+        self.assertIsNone(web.relay_target_url("http://h/_relay/https://example.com/a.css"))
 
 
 class ReaderTests(unittest.TestCase):

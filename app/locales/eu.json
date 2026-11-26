@@ -11,7 +11,7 @@
   "step_connect": "Webgunera konektatzen…",
   "step_fetch": "Orriko edukia deskargatzen…",
   "step_detect": "BOTen aurkako erronken egiaztapena…",
-  "step_fallback_freedium": "Freedium probatzen (Medium saihesbidea)…",
+  "step_fallback_freedium": "Freedium probatzen (Medium ispilua)…",
   "step_fallback_org": "archive.org argazkia probatzen…",
   "step_fallback_ph": "archive.today / archive.ph argazkia probatzen…",
   "step_process": "Artikulua prozesatzen…",

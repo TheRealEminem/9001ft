@@ -11,7 +11,7 @@
   "step_connect": "Connessione al sito...",
   "step_fetch": "Download del contenuto della pagina...",
   "step_detect": "Verifica delle protezioni anti-bot...",
-  "step_fallback_freedium": "Tentativo di Freedium (bypass di Medium)...",
+  "step_fallback_freedium": "Tentativo di Freedium (mirror di Medium)...",
   "step_fallback_org": "Tentativo di snapshot da archive.org...",
   "step_fallback_ph": "Tentativo di snapshot da archive.today / archive.ph...",
   "step_process": "Elaborazione dell'articolo...",
