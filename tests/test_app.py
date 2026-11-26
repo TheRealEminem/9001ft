@@ -95,6 +95,16 @@ class AppTests(unittest.TestCase):
         self.assertIn('id="ladder-reader-btn" href="http://localhost/reader/' + URL + '"', body)
         self.assertTrue(body.endswith("</body></html>"))
         fetch.assert_not_called()
+        # The site's own scripts run sandboxed, away from this server's origin.
+        csp = response.headers["Content-Security-Policy"]
+        self.assertTrue(csp.startswith("sandbox "))
+        self.assertIn("allow-scripts", csp)
+        self.assertNotIn("allow-same-origin", csp)
+
+    def test_scripts_on_fetched_pages_cannot_change_settings(self):
+        # A sandboxed page's requests carry "Origin: null", which is refused.
+        response = self.client.post("/settings/ai", json={"mode": "off"}, headers={"Origin": "null"})
+        self.assertEqual(response.status_code, 403)
 
     def test_status_requires_url(self):
         self.assertEqual(self.client.get("/status").status_code, 400)

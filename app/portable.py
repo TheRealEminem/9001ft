@@ -1344,15 +1344,24 @@ READER_BUTTON = (
 
 def finalize_page(page_html, url, strings):
     """Last step before serving a fetched page: point relay links at this
-    server and add the Reader view button. Both need this server's address,
-    which only the request knows, so the cached copy stays without them."""
+    server, add the Reader view button (both need this server's address, which
+    only the request knows, so the cached copy stays without them) and sandbox
+    the page (see FETCHED_PAGE_CSP)."""
     page_html = page_html.replace(RELAY_TOKEN, request.host_url + "_relay/")
     href = request.host_url + "reader/" + url
     button = READER_BUTTON.format(href=html_lib.escape(href, quote=True), label=html_lib.escape(strings["reader_button"]))
     end = page_html.lower().rfind("</body>")
-    if end == -1:
-        return page_html + button
-    return page_html[:end] + button + page_html[end:]
+    page_html = page_html + button if end == -1 else page_html[:end] + button + page_html[end:]
+    response = Response(page_html, mimetype="text/html")
+    response.headers["Content-Security-Policy"] = FETCHED_PAGE_CSP
+    return response
+
+
+# Fetched pages keep the original site's scripts (for animations and
+# graphics). Sandboxing without allow-same-origin runs them in an opaque
+# origin, so they can't read or call anything on this server, such as the AI
+# settings and their API keys. Links, pop-ups and forms still work.
+FETCHED_PAGE_CSP = "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms"
 
 
 def relay_target_url(full_url):
