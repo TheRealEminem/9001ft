@@ -339,6 +339,7 @@ ERROR_TEMPLATE = """<!DOCTYPE html>
 <title>{{ error_title }} · 9001ft Ladder</title>
 <link rel="icon" href="/favicon.ico" type="image/png">
 <style nonce="{{ nonce }}">
+{{ font_face_css | safe }}
 * { box-sizing: border-box; }
 {{ palette_css | safe }}
 body {
@@ -413,6 +414,6 @@ h1 { font-family: var(--display); font-weight: 400; font-size: 1.7rem; letter-sp
 
 def content_security_policy(nonce):
     return (
-        f"default-src 'none'; img-src 'self'; style-src 'nonce-{nonce}'; script-src 'nonce-{nonce}'; "
+        f"default-src 'none'; img-src 'self'; font-src 'self'; style-src 'nonce-{nonce}'; script-src 'nonce-{nonce}'; "
         "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
     )

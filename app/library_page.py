@@ -211,8 +211,14 @@ CONFIRM_TEMPLATE = _HEAD + """<title>{{ library_confirm_title }} · 9001ft Ladde
 """
 
 
+import theme  # noqa: E402
+
+LIBRARY_TEMPLATE = theme.with_theme(LIBRARY_TEMPLATE)
+CONFIRM_TEMPLATE = theme.with_theme(CONFIRM_TEMPLATE)
+
+
 def content_security_policy(nonce):
     return (
-        "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; "
+        "default-src 'none'; img-src 'self'; font-src 'self'; style-src 'unsafe-inline'; "
         f"script-src 'nonce-{nonce}'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
     )

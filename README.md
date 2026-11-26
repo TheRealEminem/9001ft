@@ -198,3 +198,5 @@ The tests run offline: Flask's test client stands in for the browser, and every 
 ## Credits
 
 9001ft Ladder is built on [13ft](https://github.com/wasi-master/13ft) by Arian Mollik Wasi and its contributors, under the MIT license. 13ft logo by [@mcmikemn](https://github.com/mcmikemn).
+
+Fonts: [Bangers](https://github.com/googlefonts/bangers) and [Open Sans](https://github.com/googlefonts/opensans), bundled in `assets/fonts/` under the SIL Open Font License 1.1 (license texts alongside them), so no page loads fonts from an outside service.

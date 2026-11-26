@@ -265,7 +265,7 @@ def content_security_policy(nonce):
     # The article HTML is sanitized, but the CSP makes sure nothing in it can
     # run script on this server's origin even if something slips through.
     return (
-        "default-src 'none'; img-src * data: blob:; media-src *; frame-src *; "
+        "default-src 'none'; img-src * data: blob:; media-src *; frame-src *; font-src 'self'; "
         f"style-src 'unsafe-inline'; script-src 'nonce-{nonce}'; connect-src 'self'; "
         "worker-src 'self'; manifest-src 'self'; "
         "base-uri 'none'; form-action 'none'"
@@ -285,10 +285,11 @@ READER_TEMPLATE = """<!DOCTYPE html>
 <title>{{ article.title or source_url }}</title>
 <link rel="icon" href="/favicon.ico" type="image/png">
 <link rel="manifest" href="/manifest.webmanifest">
-<meta name="theme-color" content="#9b4dca">
+<meta name="theme-color" content="#fdf3dc">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <script src="/static/app.js" defer nonce="{{ nonce }}"></script>
 <style>
+{{ font_face_css | safe }}
   :root {
     --bg: #fbfaf7; --text: #1d1c1a; --muted: #6b6760; --rule: #e6e2da;
     --link: #2357b5; --quote: #f2efe8; --bar: rgba(251, 250, 247, 0.92);
@@ -326,7 +327,7 @@ READER_TEMPLATE = """<!DOCTYPE html>
   }
   .bar a { color: var(--muted); text-decoration: none; }
   .bar a:hover { color: var(--text); }
-  .brand { font-weight: 700; color: var(--text) !important; margin-right: auto; }
+  .brand { font: 400 20px/1 Bangers, Impact, 'Arial Narrow Bold', sans-serif; letter-spacing: 0.05em; color: var(--text) !important; margin-right: auto; }
   .bar button {
     font: inherit; color: var(--muted); background: none; border: 1px solid var(--rule);
     border-radius: 6px; padding: 5px 9px; cursor: pointer;

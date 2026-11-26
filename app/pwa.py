@@ -6,8 +6,8 @@ answers or settings.
 """
 import re
 
-THEME_COLOR = "#9b4dca"
-BACKGROUND_COLOR = "#ffffff"
+THEME_COLOR = "#fdf3dc"
+BACKGROUND_COLOR = "#fdf3dc"
 
 ICON_FILES = {
     "icon-192.png", "icon-512.png", "maskable-192.png", "maskable-512.png", "apple-touch-icon.png",
@@ -76,7 +76,7 @@ def first_web_link(*values):
 
 def content_security_policy(nonce):
     return (
-        "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; "
+        "default-src 'none'; img-src 'self'; font-src 'self'; style-src 'unsafe-inline'; "
         f"script-src 'nonce-{nonce}'; worker-src 'self'; manifest-src 'self'; "
         "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
     )
@@ -92,7 +92,7 @@ MESSAGE_TEMPLATE = """<!DOCTYPE html>
 <title>{{ title }} · 9001ft Ladder</title>
 <link rel="icon" href="/favicon.ico" type="image/png">
 <link rel="manifest" href="/manifest.webmanifest">
-<meta name="theme-color" content="#9b4dca">
+<meta name="theme-color" content="#fdf3dc">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <script src="/static/app.js" defer nonce="{{ nonce }}"></script>
 <style>
@@ -121,3 +121,8 @@ MESSAGE_TEMPLATE = """<!DOCTYPE html>
 </body>
 </html>
 """
+
+
+import theme  # noqa: E402
+
+MESSAGE_TEMPLATE = theme.with_theme(MESSAGE_TEMPLATE, auto_dark=True)
