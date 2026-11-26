@@ -75,28 +75,38 @@ A few sites block forms from sending data to other addresses (a `form-action` se
 
 ## AI tidy (optional)
 
-When a page comes out jumbled (archived copies often do), press **✨ Tidy up** in Reader view. The button only appears once a model is set up.
+When a page comes out jumbled (archived copies often do), press **✨ Tidy up** in Reader view. The button appears once you've chosen an AI (below).
 
 How it stays faithful: the article is split into numbered blocks, and the model answers only with a plan (block 4 is a heading, blocks 7 and 8 are one paragraph, block 12 is an ad). 9001ft rebuilds the page from the original blocks, so the model can't add or change a word. It can leave out short clutter blocks, capped at 60 words each and a quarter of the article. A final check compares the words before and after, and **Show original** switches back at any time.
 
-It works with any OpenAI-compatible chat API: [Ollama](https://ollama.com) on your own computer, a LiteLLM router, OpenAI and others. Create a file called `.env.local` in the top folder (git ignores it):
+### Choosing the AI
+
+Open **⚙️ AI settings** from the home page (`http://localhost:5013/settings`) and pick one:
+
+- **Off.**
+- **Local model with Ollama.** Runs on your own computer, so nothing leaves it. Pick from the models you've downloaded (sizes are shown); a small one such as `qwen3.5:4b` suits a laptop. Thinking is off by default, which is much faster.
+- **Your own API key.** Anthropic Claude, OpenAI, Google Gemini, OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, or any other OpenAI-compatible address (a LiteLLM router, LM Studio, …). **Load list** asks the provider which models your key can use. You can also tick **use my local model** as a fallback for when the service can't be reached.
+
+**Test AI** sends a one-word request to check the setup. Settings are saved in `data/settings.json` (git ignores it, and only your user can read it). API keys never go back to the browser. When you press Tidy up, the article's text goes to the service you chose; nothing is sent before that.
+
+The settings page and AI tidy only answer at `localhost`, from 9001ft's own pages. To use them under another hostname on your own network, list it in `LADDER_ALLOWED_HOSTS` (comma-separated).
+
+<details>
+<summary>Setting it up with environment variables instead</summary>
+
+When nothing is saved on the settings page, 9001ft reads these from the environment or from a `.env.local` file in the top folder (git ignores it):
 
 ```sh
-# Required
-TIDY_API_BASE=http://localhost:11434/v1
-TIDY_MODEL=qwen3.5:9b
-# If the service needs a key, either of these
-TIDY_API_KEY=...
-TIDY_API_KEY_FILE=~/path/to/key-file
-# Optional: "none" stops a thinking model thinking, which is much faster
-TIDY_REASONING_EFFORT=none
-# Optional second service, used when the first can't be reached
-TIDY_FALLBACK_API_BASE=...
-TIDY_FALLBACK_MODEL=...
-# (and TIDY_FALLBACK_API_KEY, _API_KEY_FILE, _REASONING_EFFORT)
+TIDY_API_BASE=http://localhost:11434/v1     # any OpenAI-compatible API
+TIDY_MODEL=qwen3.5:4b
+TIDY_API_KEY=...                            # or TIDY_API_KEY_FILE=~/path/to/key-file
+TIDY_REASONING_EFFORT=none                  # optional: "none" stops a thinking model thinking
+TIDY_FALLBACK_API_BASE=...                  # optional second service, tried when the first can't be reached
+TIDY_FALLBACK_MODEL=...                     # (and _API_KEY, _API_KEY_FILE, _REASONING_EFFORT)
 ```
 
-Restart 9001ft after changing it. The article text is sent to whichever service you configure, so a model on your own computer keeps it private. With Docker, a model on your computer is at `http://host.docker.internal:11434/v1`.
+`LADDER_DATA_DIR` changes where the settings page saves (default: `data/`). With Docker, `docker-compose.yaml` keeps it in `./data`, and a model on your computer is at `http://host.docker.internal:11434/v1`.
+</details>
 
 ## How it works
 

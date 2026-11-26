@@ -8,28 +8,23 @@ from the original blocks, so the wording can't change. Dropping is capped so
 a bad plan can't remove real content, and a final check compares the words
 before and after.
 
-Works with any OpenAI-compatible chat API: a LiteLLM router, Ollama, OpenAI,
-and others. Configure with environment variables (or a .env.local file):
-
-    TIDY_API_BASE      e.g. http://localhost:11434/v1
-    TIDY_MODEL         e.g. qwen3.5:9b
-    TIDY_API_KEY       or TIDY_API_KEY_FILE (a file holding the key)
-    TIDY_REASONING_EFFORT  optional, e.g. "none" to stop a thinking model
-                           thinking (much faster) or "low"; sent only if set
-
-and optionally the same settings with TIDY_FALLBACK_ in place of TIDY_,
-for a second service tried when the first can't be reached.
+Which AI it uses comes from ai_settings (the /settings page, or TIDY_*
+environment variables): a local Ollama model, Anthropic Claude through the
+official SDK, or any OpenAI-compatible chat API.
 """
 
 import json
-import os
 import re
 import time
 from dataclasses import dataclass, field
 from html import escape
 
+import anthropic
 import requests
 from bs4 import BeautifulSoup, NavigableString, Tag
+
+import ai_settings
+from ai_settings import Backend  # noqa: F401  (re-exported for callers and tests)
 
 LEAF_TAGS = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "pre", "figcaption", "dt", "dd"}
 ATOMIC_TAGS = {"table", "img", "video", "audio", "iframe", "picture", "hr"}
@@ -72,18 +67,6 @@ class TidyError(Exception):
 
 
 @dataclass
-class Backend:
-    base: str
-    model: str
-    key: str = ""
-    reasoning_effort: str = ""
-
-    @property
-    def label(self):
-        return self.model
-
-
-@dataclass
 class Block:
     id: int
     tag: str
@@ -99,27 +82,8 @@ class Block:
 
 # --- configuration --------------------------------------------------------
 
-def _read_key(prefix):
-    key = os.environ.get(prefix + "API_KEY", "").strip()
-    path = os.environ.get(prefix + "API_KEY_FILE", "").strip()
-    if not key and path:
-        try:
-            with open(os.path.expanduser(path), encoding="utf-8") as handle:
-                key = handle.read().strip()
-        except OSError:
-            key = ""
-    return key
-
-
 def backends():
-    found = []
-    for prefix in ("TIDY_", "TIDY_FALLBACK_"):
-        base = os.environ.get(prefix + "API_BASE", "").strip()
-        model = os.environ.get(prefix + "MODEL", "").strip()
-        if base and model:
-            found.append(Backend(base=base.rstrip("/"), model=model, key=_read_key(prefix),
-                                 reasoning_effort=os.environ.get(prefix + "REASONING_EFFORT", "").strip()))
-    return found
+    return ai_settings.backends()
 
 
 def enabled():
@@ -192,29 +156,91 @@ def _preview(block):
 
 # --- talking to the model --------------------------------------------------
 
-def _ask(backend, blocks):
+class Unreachable(Exception):
+    """The service couldn't be reached at all, so a fallback may be tried."""
+
+
+# Server-side refusal fallbacks (recommended for these Claude models): if a
+# safety check declines, the API retries on a suitable model in the same call.
+FALLBACK_MODELS = ("claude-opus-5", "claude-sonnet-5-5", "claude-fable-5")
+
+
+def _chat_openai(backend, system, user, max_tokens):
     headers = {"Content-Type": "application/json"}
     if backend.key:
         headers["Authorization"] = f"Bearer {backend.key}"
     payload = {
         "model": backend.model,
         "temperature": 0,
-        "max_tokens": 4096,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": "\n".join(_preview(block) for block in blocks)},
-        ],
+        "max_tokens": max_tokens,
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
     }
     if backend.reasoning_effort:
         payload["reasoning_effort"] = backend.reasoning_effort
-    response = requests.post(backend.base + "/chat/completions", json=payload, headers=headers,
-                             timeout=(4, REQUEST_TIMEOUT))
+    try:
+        response = requests.post(backend.base + "/chat/completions", json=payload, headers=headers,
+                                 timeout=(4, REQUEST_TIMEOUT))
+    except requests.exceptions.Timeout as error:
+        if isinstance(error, requests.exceptions.ConnectTimeout):
+            raise Unreachable(backend.label)
+        raise TidyError("the AI took too long to answer")
+    except requests.exceptions.ConnectionError:
+        raise Unreachable(backend.label)
+    if response.status_code in (401, 403):
+        raise TidyError("the AI service refused the API key")
     if response.status_code >= 400:
         raise TidyError(f"the AI service answered with error {response.status_code}")
     try:
         return response.json()["choices"][0]["message"].get("content") or ""
     except (ValueError, KeyError, IndexError, TypeError):
         raise TidyError("the AI service sent an answer this app couldn't read")
+
+
+def _chat_anthropic(backend, system, user, max_tokens):
+    client = anthropic.Anthropic(api_key=backend.key, timeout=REQUEST_TIMEOUT, max_retries=1)
+    # Laying out blocks is a light task: low effort keeps it quick. "none" isn't
+    # an effort level on Claude, so it maps to low.
+    effort = backend.reasoning_effort if backend.reasoning_effort in ("medium", "high") else "low"
+    params = dict(model=backend.model, max_tokens=max_tokens, system=system,
+                  messages=[{"role": "user", "content": user}], output_config={"effort": effort})
+    try:
+        if backend.model.startswith(FALLBACK_MODELS):
+            response = client.beta.messages.create(betas=["server-side-fallback-2026-07-01"],
+                                                   fallbacks="default", **params)
+        else:
+            response = client.messages.create(**params)
+    except anthropic.APITimeoutError:
+        raise TidyError("the AI took too long to answer")
+    except anthropic.APIConnectionError:
+        raise Unreachable(backend.label)
+    except (anthropic.AuthenticationError, anthropic.PermissionDeniedError):
+        raise TidyError("Anthropic refused the API key")
+    except anthropic.NotFoundError:
+        raise TidyError(f"Anthropic doesn't know the model {backend.model}")
+    except anthropic.RateLimitError:
+        raise TidyError("Anthropic is rate limiting this key; try again shortly")
+    except anthropic.APIStatusError as error:
+        raise TidyError(f"Anthropic answered with error {error.status_code}")
+    if response.stop_reason == "refusal":
+        raise TidyError("the AI declined to work on this page")
+    return "".join(block.text for block in response.content if block.type == "text")
+
+
+def chat(backend, system, user, max_tokens=16000):
+    if backend.kind == "anthropic":
+        return _chat_anthropic(backend, system, user, max_tokens)
+    return _chat_openai(backend, system, user, max_tokens)
+
+
+def first_answer(available, system, user, max_tokens=16000):
+    """Ask each service in turn until one can be reached. Returns (answer, backend)."""
+    unreachable = []
+    for backend in available:
+        try:
+            return chat(backend, system, user, max_tokens), backend
+        except Unreachable:
+            unreachable.append(backend.label)
+    raise TidyError("couldn't reach the AI service (" + ", ".join(unreachable) + ")")
 
 
 def parse_plan(text):
@@ -371,18 +397,7 @@ def tidy(fragment_html):
         raise TidyError("this page is too long to tidy")
 
     started = time.time()
-    answer, used, unreachable = None, None, []
-    for backend in available:
-        try:
-            answer = _ask(backend, blocks)
-            used = backend
-            break
-        except (requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout):
-            unreachable.append(backend.label)
-        except requests.exceptions.Timeout:
-            raise TidyError("the AI took too long to answer")
-    if used is None:
-        raise TidyError("couldn't reach the AI service (" + ", ".join(unreachable) + ")")
+    answer, used = first_answer(available, SYSTEM_PROMPT, "\n".join(_preview(block) for block in blocks))
 
     groups, stats = apply_plan(blocks, parse_plan(answer))
     html, stats["lists"] = render(groups)
@@ -393,3 +408,13 @@ def tidy(fragment_html):
         raise TidyError("the tidied page didn't match the original, so it was thrown away")
 
     return {"html": html, "stats": stats, "model": used.label, "seconds": round(time.time() - started, 1)}
+
+
+def test_connection(ai):
+    """Send a tiny request with these settings. Returns {"model", "seconds", "reply"}."""
+    available = ai_settings.backends_for(ai)
+    if not available:
+        raise TidyError("these settings aren't complete yet")
+    started = time.time()
+    answer, used = first_answer(available, "Reply with the single word OK.", "Test", max_tokens=2048)
+    return {"model": used.label, "seconds": round(time.time() - started, 1), "reply": (answer or "").strip()[:60]}

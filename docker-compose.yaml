@@ -14,3 +14,6 @@ services:
     env_file:
       - path: .env.local
         required: false
+    # Settings saved on the /settings page (including any API keys) live here.
+    volumes:
+      - ./data:/data
