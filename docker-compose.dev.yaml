@@ -1,9 +1,9 @@
 services:
-  13ft:
-    container_name: 13ft
-    hostname: 13ft
+  9001ft:
+    container_name: 9001ft
+    hostname: 9001ft
     build:
       context: .
     restart: unless-stopped
     ports:
-      - "5000:5000"
+      - "127.0.0.1:5013:5000"

@@ -1,8 +1,10 @@
+import html as html_lib
 import json
 import os
 import flask
 import re
 import requests
+import secrets
 import uuid
 import threading
 import time
@@ -10,6 +12,8 @@ from functools import lru_cache
 from urllib.parse import urljoin, urlparse, quote, unquote
 from flask import request, Response
 from bs4 import BeautifulSoup
+
+import reader
 
 app = flask.Flask(__name__)
 
@@ -47,6 +51,18 @@ _DEFAULT_STRINGS = {
     "connection_error": "Could not connect to the website. Check the URL and try again.",
     "request_error": "Failed to fetch the page.",
     "unexpected_error": "Unexpected error while fetching the page.",
+    "reader_checkbox": "Open in Reader view",
+    "reader_button": "Reader view",
+    "reader_original": "Original page",
+    "reader_source": "Source",
+    "reader_minutes": "{minutes} min read",
+    "reader_smaller": "Smaller text",
+    "reader_larger": "Larger text",
+    "reader_theme": "Change theme",
+    "reader_empty": (
+        "Couldn't find the article text on this page. "
+        "Try the original page instead."
+    ),
 }
 
 
@@ -104,7 +120,7 @@ html = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <title>13ft Ladder</title>
+    <title>9001ft Ladder</title>
     <link rel="icon" href="/favicon.ico" type="image/png">
     <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600&display=swap" rel="stylesheet" async>
     <style>
@@ -160,6 +176,17 @@ html = """
         input[type="submit"]:hover {
             background-color: #821fc0;
         }
+
+        .reader-option {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: -4px 0 16px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .reader-option input { width: auto; margin: 0; }
 
         .dark-mode-toggle {
             position: absolute;
@@ -422,6 +449,9 @@ html = """
             <h1>{{ heading }}</h1>
             <label for="link">{{ label }}</label>
             <input type="text" id="link" name="link" required autofocus>
+            <label class="reader-option" for="reader-mode">
+                <input type="checkbox" id="reader-mode"> {{ reader_checkbox }}
+            </label>
             <input type="submit" value="{{ submit }}">
         </form>
     </div>
@@ -456,6 +486,12 @@ html = """
                 document.body.classList.remove("dark-mode");
                 localStorage.setItem('theme', 'light');
             }
+        });
+
+        const readerToggle = document.getElementById('reader-mode');
+        try { readerToggle.checked = localStorage.getItem('readerMode') === '1'; } catch (e) {}
+        readerToggle.addEventListener('change', function () {
+            try { localStorage.setItem('readerMode', this.checked ? '1' : '0'); } catch (e) {}
         });
 
         const UI_STRINGS = {{ ui_strings | tojson }};
@@ -540,8 +576,9 @@ html = """
                     clearInterval(timer);
                     renderSteps(STEPS.length);
                     progressEl.style.width = '100%';
+                    const target = readerToggle.checked ? '/reader' + data.redirect : data.redirect;
                     setTimeout(() => {
-                        window.location.href = data.redirect;
+                        window.location.href = target;
                     }, 400);
                 }
             });
@@ -604,6 +641,133 @@ def render_main_page():
     )
 
 
+# --- archive.org (Wayback Machine) snapshots ---
+#
+# We fetch snapshots in raw `id_` mode, which returns the page exactly as it
+# was captured. Its asset URLs still point at the original site, and the <base>
+# tag we inject makes root-relative ones ("/w/load.php") resolve to
+# web.archive.org's root, where nothing exists. So we point every asset at its
+# archived copy instead. CSS goes through `cs_` so Wayback also rewrites the
+# url() references inside it; scripts and images stay raw (`id_`), because
+# Wayback's rewritten JavaScript only runs with its own toolbar loaded.
+
+WAYBACK_SNAPSHOT_RE = re.compile(r"^https?://web\.archive\.org/web/(\d{1,14})(?:[a-z]{2}_)?/(.+)$", re.I)
+
+_NON_FETCHABLE = ("data:", "blob:", "javascript:", "mailto:", "tel:", "about:", "#")
+
+WAYBACK_ASSET_ATTRS = [
+    ("img", "src", "id_"),
+    ("img", "data-src", "id_"),
+    ("source", "src", "id_"),
+    ("video", "src", "id_"),
+    ("video", "poster", "id_"),
+    ("audio", "src", "id_"),
+    ("track", "src", "id_"),
+    ("script", "src", "id_"),
+    ("iframe", "src", "if_"),
+    ("embed", "src", "id_"),
+    ("object", "data", "id_"),
+    ("input", "src", "id_"),
+]
+
+CSS_URL_RE = re.compile(r"""url\(\s*(['"]?)(.*?)\1\s*\)""", re.I)
+CSS_IMPORT_RE = re.compile(r"""@import\s+(['"])(.*?)\1""", re.I)
+
+# Shown if an archived image was never captured: fall back to the live copy.
+IMG_FALLBACK_JS = "this.onerror=null;this.removeAttribute('srcset');this.src=this.dataset.liveSrc;"
+
+
+def parse_wayback_url(url):
+    """Return (timestamp, original_url) for a Wayback snapshot URL, else None."""
+    match = WAYBACK_SNAPSHOT_RE.match(url or "")
+    if not match:
+        return None
+    original = match.group(2)
+    if not re.match(r"^https?://", original, re.I):
+        original = "http://" + original.lstrip("/")
+    return match.group(1), original
+
+
+def _absolute_url(value, page_url):
+    value = (value or "").strip()
+    if not value or value.lower().startswith(_NON_FETCHABLE):
+        return None
+    absolute = urljoin(page_url, value)
+    if urlparse(absolute).scheme not in ("http", "https"):
+        return None
+    return absolute
+
+
+def _archived_url(value, timestamp, flag, page_url):
+    absolute = _absolute_url(value, page_url)
+    if absolute is None:
+        return value
+    if (urlparse(absolute).hostname or "").endswith("archive.org"):
+        return absolute
+    return f"https://web.archive.org/web/{timestamp}{flag}/{absolute}"
+
+
+def _rewrite_srcset(value, timestamp, page_url):
+    # Candidates are separated by ", ". Splitting on a bare comma would break
+    # CDN URLs that use commas inside the path (e.g. "w_400,h_300").
+    candidates = re.split(r",\s+", value.strip()) if ", " in value else value.split(",")
+    rewritten = []
+    for candidate in candidates:
+        bits = candidate.strip().split(None, 1)
+        if not bits:
+            continue
+        bits[0] = _archived_url(bits[0], timestamp, "id_", page_url)
+        rewritten.append(" ".join(bits))
+    return ", ".join(rewritten)
+
+
+def _rewrite_css(css, timestamp, page_url):
+    css = CSS_IMPORT_RE.sub(
+        lambda m: f"@import {m.group(1)}{_archived_url(m.group(2), timestamp, 'cs_', page_url)}{m.group(1)}",
+        css,
+    )
+    return CSS_URL_RE.sub(
+        lambda m: f"url({m.group(1)}{_archived_url(m.group(2), timestamp, 'id_', page_url)}{m.group(1)})",
+        css,
+    )
+
+
+def rewrite_wayback_snapshot(soup, timestamp, page_url):
+    """Point a raw Wayback snapshot's assets at their archived copies."""
+    for tag, attr, flag in WAYBACK_ASSET_ATTRS:
+        for element in soup.find_all(tag, attrs={attr: True}):
+            element[attr] = _archived_url(element[attr], timestamp, flag, page_url)
+
+    for element in soup.find_all(["img", "source"]):
+        for attr in ("srcset", "data-srcset"):
+            if element.get(attr):
+                element[attr] = _rewrite_srcset(element[attr], timestamp, page_url)
+
+    for img in soup.find_all("img", src=True):
+        archived = img["src"]
+        prefix_end = archived.find("/", len("https://web.archive.org/web/"))
+        if archived.startswith("https://web.archive.org/web/") and prefix_end != -1:
+            img["data-live-src"] = archived[prefix_end + 1:]
+            img["onerror"] = IMG_FALLBACK_JS
+
+    for link in soup.find_all("link", href=True):
+        rel = [r.lower() for r in (link.get("rel") or [])]
+        is_css = "stylesheet" in rel or (link.get("as") or "").lower() == "style"
+        link["href"] = _archived_url(link["href"], timestamp, "cs_" if is_css else "id_", page_url)
+
+    for style in soup.find_all("style"):
+        if style.string:
+            style.string = _rewrite_css(style.string, timestamp, page_url)
+    for element in soup.find_all(style=True):
+        element["style"] = _rewrite_css(element["style"], timestamp, page_url)
+
+    # Links to other pages go to the live site, as they do for direct fetches.
+    for element in soup.find_all(["a", "area"], href=True):
+        absolute = _absolute_url(element["href"], page_url)
+        if absolute:
+            element["href"] = absolute
+
+
 def process_html_document(html_content, original_url):
     """
     Parses HTML, injects the <base> tag to fix relative links, and applies
@@ -620,7 +784,7 @@ def process_html_document(html_content, original_url):
     base_tag = soup.find("base")
     if base_tag:
         # Always overwrite — sites may have <base href="/"> which would resolve
-        # root-relative asset paths to the 13ft server instead of the original domain.
+        # root-relative asset paths to this server instead of the original domain.
         base_tag["href"] = base_url
     else:
         new_base_tag = soup.new_tag("base", href=base_url)
@@ -631,7 +795,12 @@ def process_html_document(html_content, original_url):
             head_tag.insert(0, new_base_tag)
             soup.insert(0, head_tag)
 
-    domain = parsed_url.netloc.lower()
+    wayback = parse_wayback_url(original_url)
+    if wayback:
+        rewrite_wayback_snapshot(soup, *wayback)
+
+    # Site-specific fixes below key off the article's own domain, not archive.org's.
+    domain = (urlparse(wayback[1]).netloc if wayback else parsed_url.netloc).lower()
 
     # --- GENERAL FIXES ---
 
@@ -664,7 +833,7 @@ def process_html_document(html_content, original_url):
 
     # --- FAVICON OVERRIDE ---
     # Remove any existing favicon links from the source page and inject the
-    # 13ft favicon so the browser tab always shows the 13ft logo.
+    # ladder favicon so the browser tab always shows the ladder logo.
     for link_tag in soup.find_all("link", rel=lambda r: r and any(
             v.lower() in ("icon", "shortcut icon", "apple-touch-icon",
                           "apple-touch-icon-precomposed", "mask-icon")
@@ -1013,12 +1182,94 @@ def status_stream():
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 
+# Floating button on article pages. The page carries a <base> tag pointing at
+# the original site, so the link must be absolute to reach this server.
+READER_BUTTON = (
+    '<a id="ladder-reader-btn" href="{href}" style="all:initial;position:fixed;right:16px;bottom:16px;'
+    "z-index:2147483647;background:#1f2937;color:#fff;cursor:pointer;text-decoration:none;"
+    "font:600 14px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:11px 15px;"
+    'border-radius:999px;box-shadow:0 4px 14px rgba(0,0,0,.28)">&#128214; {label}</a>'
+)
+
+
+def with_reader_button(page_html, url, strings):
+    href = request.host_url + "reader/" + url
+    button = READER_BUTTON.format(href=html_lib.escape(href, quote=True), label=html_lib.escape(strings["reader_button"]))
+    end = page_html.lower().rfind("</body>")
+    if end == -1:
+        return page_html + button
+    return page_html[:end] + button + page_html[end:]
+
+
+def get_page(url, strings):
+    """Fetch a page through the bypass, reusing the short-lived page cache."""
+    key = normalize_cache_url(url)
+    with page_cache_lock:
+        cached = page_cache.get(key)
+    if cached and time.time() - cached["timestamp"] <= PAGE_CACHE_TTL:
+        return cached["html"]
+    result = bypass_paywall(url, strings)
+    if not is_challenge_page(result):
+        with page_cache_lock:
+            clean_page_cache()
+            page_cache[key] = {"html": result, "timestamp": time.time()}
+    return result
+
+
+def reader_target_url(full_url):
+    """'http://host/reader/https://site/a?b' -> 'https://site/a?b'."""
+    parts = full_url.split("/", 3)
+    if len(parts) < 4 or not parts[3].startswith("reader/"):
+        return None
+    target = re.sub(r"^https?:/*", "", parts[3][len("reader/"):], flags=re.I).lstrip("/")
+    return "https://" + target if target else None
+
+
+@app.route("/reader/<path:path>", methods=["GET"])
+def reader_view(path):
+    strings = load_strings()
+    url = reader_target_url(request.url)
+    if not url:
+        return strings["invalid_url"], 400
+    try:
+        page_html = get_page(url, strings)
+    except requests.exceptions.Timeout:
+        return strings["timeout_error"], 400
+    except requests.exceptions.ConnectionError:
+        return strings["connection_error"], 400
+    except requests.exceptions.RequestException:
+        return strings["request_error"], 400
+    except UserFacingError as error:
+        return error.user_message, 400
+    except Exception:
+        return strings["unexpected_error"], 500
+
+    try:
+        article = reader.extract_article(page_html, url)
+    except Exception:
+        article = {"title": url, "site": "", "author": "", "published": "",
+                   "minutes": 0, "lead_image": "", "content": ""}
+
+    nonce = secrets.token_urlsafe(16)
+    body = flask.render_template_string(
+        reader.READER_TEMPLATE,
+        article=article,
+        source_url=url,
+        original_href="/" + url,
+        nonce=nonce,
+        **strings,
+    )
+    response = Response(body, mimetype="text/html")
+    response.headers["Content-Security-Policy"] = reader.content_security_policy(nonce)
+    return response
+
+
 @app.route("/article", methods=["POST"])
 def show_article():
     link = flask.request.form["link"]
     strings = load_strings()
     try:
-        return bypass_paywall(link, strings)
+        return with_reader_button(bypass_paywall(link, strings), link, strings)
     except requests.exceptions.Timeout:
         return strings["timeout_error"], 400
     except requests.exceptions.ConnectionError:
@@ -1043,10 +1294,10 @@ def get_article(path):
         with page_cache_lock:
             cached = page_cache.get(actual_url)
         if cached:
-            return cached['html']
+            return with_reader_button(cached['html'], actual_url, strings)
 
         try:
-            return bypass_paywall(actual_url, strings)
+            return with_reader_button(bypass_paywall(actual_url, strings), actual_url, strings)
         except requests.exceptions.Timeout:
             return strings["timeout_error"], 400
         except requests.exceptions.ConnectionError:

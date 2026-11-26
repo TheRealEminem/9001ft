@@ -1,43 +1,39 @@
-# 13 Feet Ladder
+# 9001ft Ladder
 
-<img src="https://raw.githubusercontent.com/wasi-master/13ft/refs/heads/main/logo.png" align="right"
-     alt="13 Feet Ladder Logo by @mcmikemn" width="150">
+A self-hosted ladder over paywalls, cookie walls and clutter. When 12 feet isn't enough, and 13 isn't either.
 
-![build](https://github.com/wasi-master/13ft/actions/workflows/build.yaml/badge.svg)
-[![Docker Pulls](https://img.shields.io/docker/pulls/wasimaster/13ft)](https://hub.docker.com/r/wasimaster/13ft)
-[![runs](https://img.shields.io/badge/dynamic/json?url=https://github.com/ipitio/backage/raw/refs/heads/index/wasi-master/13ft/13ft.json&query=$.downloads&logo=github&logoColor=959da5&label=ghcr%20pulls&labelColor=333a41)](https://github.com/wasi-master/13ft/pkgs/container/13ft)
+9001ft Ladder is a fork of [wasi-master/13ft](https://github.com/wasi-master/13ft) (MIT). It keeps everything 13ft does and adds:
 
-A site similar to [12ft.io](https://12ft.io) but is self hosted and works with websites that 12ft.io doesn't work with.
+- **Reader view.** One click turns any fetched page into a clean, distraction-free article: title, author, date, reading time, body text and images, with light, dark and sepia themes and adjustable text size. Nothing in the article's wording is changed.
+- **Working archive.org pages.** When a page comes from the Wayback Machine, its stylesheets, images and scripts now load from the archived copies, so the page keeps its look (upstream 13ft showed these unstyled with broken images).
 
-## What is this?
-
-This is a simple self hosted server that has a simple but powerful interface to block ads, paywalls, and other nonsense. Specially for sites like medium, new york times which have paid articles that you normally cannot read. Now I do want you to support the creators you benefit from but if you just wanna see one single article and move on with your day then this might be helpful
+Please support the writers you read when you can. This is for the one article you want to read and move on.
 
 ## How does it work?
 
-It pretends to be GoogleBot (Google's web crawler) and gets the same content that google will get. Google gets the whole page so that the content of the article can be indexed properly and this takes advantage of that.
+It first asks for the page as Googlebot (Google's crawler), since many sites give Google the whole article so it can be indexed. Many large sites now check that Googlebot requests really come from Google, so when that fails it falls back to saved copies: Freedium for Medium, then archive.org, then archive.today. The status page shows each step as it happens. (Multi-source fallbacks courtesy of [@JRS1986](https://github.com/JRS1986).)
 
-The server now displays a loading/status page while it fetches the target article and will automatically try multiple bypass methods (multi-source fallbacks) if the primary approach fails. This improves compatibility with sites that employ stronger paywalls or blocking behaviour. Feature courtesy of [@JRS1986](https://github.com/JRS1986)
+Saved copies have limits. archive.today removes all JavaScript from what it saves, so animations and interactive graphics can't come back from there; archive.org keeps them, and 9001ft now loads them.
 
+### Reader view
+
+- Tick **Open in Reader view** on the home page, or
+- press the **📖 Reader view** button on any fetched page, or
+- go straight to `http://localhost:5013/reader/<article URL>`.
 
 ## How do I use it?
 
 ### Using Docker
 
-Requirements:
-
-- docker
-- Docker Compose (available as `docker compose`)
-
-First, clone the repo to your machine then run the following commands:
+Requirements: Docker with Docker Compose (`docker compose`).
 
 ```sh
-git clone https://github.com/wasi-master/13ft.git
-cd 13ft
-docker compose up
+git clone https://github.com/TheRealEminem/9001ft.git
+cd 9001ft
+docker compose up --build
 ```
 
-The image is also available from [DockerHub](https://hub.docker.com/r/wasimaster/13ft "docker pull wasimaster/13ft") or [ghcr.io](https://github.com/wasi-master/13ft/pkgs/container/13ft "docker pull ghcr.io/wasi-master/13ft:0.2.3") so the command `docker pull wasimaster/13ft` also works.
+Then open <http://localhost:5013>. It listens on 127.0.0.1 only: anyone who can reach it can fetch any page through it, so don't expose it publicly without putting it behind authentication. (Port 5013 rather than 5000 because macOS AirPlay Receiver uses 5000.)
 
 ### Standard Python script
 
@@ -66,6 +62,12 @@ python -m gunicorn 'portable:app'
 
 Then open the link shown in the terminal in the browser and you'll be able to use this script
 
+On a Mac, port 5000 is taken by AirPlay Receiver, and the default binds to every network interface. To run on this machine only, on port 5013, run this from the top folder of the repo (not `app/`):
+
+```sh
+python -m gunicorn --chdir app -b 127.0.0.1:5013 --threads 4 portable:app
+```
+
 ### Installation using venv and running under specific bind address / port
 
 ```sh
@@ -80,10 +82,10 @@ FLASK_APP=app/portable.py flask run --host=127.0.0.1 --port=9982
 You can create a bookmarklet that performs the URL transformation by writing a small JavaScript snippet. Below is the JavaScript code for your bookmarklet:
 
 ```javascript
-javascript: (function () {window.location.href="https://localhost:5000/" + encodeURIComponent(window.location.href);})();
+javascript: (function () {window.location.href="http://localhost:5013/" + encodeURIComponent(window.location.href);})();
 ```
 
-You can replace https://localhost:5000/ with your own 13ft instance if desired.
+You can replace http://localhost:5013/ with your own 9001ft instance if desired.
 
 Steps:
 
@@ -94,14 +96,14 @@ Steps:
    Create a New Bookmark:
 
 3. In the Bookmark Manager, click the three-dot menu in the top-right corner of the window and select Add new bookmark.
-   Enter Bookmark Details: - Name: Enter a name for your bookmarklet, such as "13ft-ize". This name will show as a bookmark title in the bookmarks bar - URL: Paste the JavaScript code provided above into the URL field.
+   Enter Bookmark Details: - Name: Enter a name for your bookmarklet, such as "9001ft-ize". This name will show as a bookmark title in the bookmarks bar - URL: Paste the JavaScript code provided above into the URL field.
 4. Click Save.
 
 Using the Bookmarklet:
 
-Navigate to the page whose URL you want to use 13ft on.
+Navigate to the page whose URL you want to use 9001ft on.
 
-Click on the bookmarklet you saved in your bookmarks bar. The browser will redirect you to the 13ft version of the URL using your service.
+Click on the bookmarklet you saved in your bookmarks bar. The browser will redirect you to the 9001ft version of the URL using your service.
 
 To show Bookmarks in Chrome, click the icon with three horizontal bars in the top right corner to open options. 2. In options, hover over "Bookmarks" to display a second menu where you can click the "Show bookmarks bar" text to toggle the bar on or off.
 
@@ -112,12 +114,12 @@ Instructions courtesy of [@barakplasma](https://github.com/barakplasma)
 ### Systemd Service
 
 ```
-/lib/systemd/system/13ft.service
+/lib/systemd/system/9001ft.service
 ```
 
 ```
 [Unit]
-Description=13ft Flask Service
+Description=9001ft Flask Service
 Wants=network-online.target
 After=network-online.target
 
@@ -144,8 +146,8 @@ WantedBy=multi-user.target
 
 ```
 <VirtualHost *:22114>
-    ErrorLog ${APACHE_LOG_DIR}/13ft-error.log
-    CustomLog ${APACHE_LOG_DIR}/13ft-access.log combined
+    ErrorLog ${APACHE_LOG_DIR}/9001ft-error.log
+    CustomLog ${APACHE_LOG_DIR}/9001ft-access.log combined
 
     ProxyRequests Off
 
@@ -220,7 +222,7 @@ Voilà you now have bypassed the paywall and ads
 
 ### Alternative method
 
-You can also append the url at the end of the link and it will also work. (e.g if your server is running at `http://127.0.0.1:5000` then you can go to `http://127.0.0.1:5000/https://example.com` and it will read out the contents of `https://example.com`)
+You can also append the url at the end of the link and it will also work. (e.g if your server is running at `http://127.0.0.1:5013` then you can go to `http://127.0.0.1:5013/https://example.com` and it will read out the contents of `https://example.com`)
 
 This feature was implemented by [@atcasanova](https://github.com/atcasanova)
 
