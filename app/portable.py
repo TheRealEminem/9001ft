@@ -35,6 +35,7 @@ import reader  # noqa: E402
 import ai_settings  # noqa: E402
 import settings_page  # noqa: E402
 import tidy  # noqa: E402
+import export  # noqa: E402
 
 app = flask.Flask(__name__)
 # The Send to Reader bookmarklet posts a whole page; Werkzeug's default limit
@@ -102,6 +103,35 @@ _DEFAULT_STRINGS = {
     "tidy_show_original": "Show original",
     "tidy_show_tidy": "Show tidied",
     "tidy_failed": "Couldn't tidy this page: {reason}.",
+    "listen_button": "Read aloud",
+    "listen_controls": "Read aloud controls",
+    "listen_play": "Play",
+    "listen_pause": "Pause",
+    "listen_stop": "Stop",
+    "listen_speed": "Speed",
+    "listen_voice": "Voice",
+    "listen_reading": "Reading {current} of {total}",
+    "listen_paused": "Paused",
+    "listen_stopped": "Stopped",
+    "listen_done": "Finished reading",
+    "listen_no_voices": "This browser has no voices to read with.",
+    "export_button": "Export",
+    "export_menu": "Export options",
+    "export_markdown": "Markdown (.md)",
+    "export_epub": "E-book (.epub)",
+    "export_print": "Print or save as PDF",
+    "export_working": "Preparing the download…",
+    "export_done": "Downloaded {filename}.",
+    "export_failed": "Couldn't export this page: {reason}.",
+    "export_label_source": "Source",
+    "export_label_by": "By",
+    "export_label_published": "Published",
+    "export_label_images_note": "Images aren't included in this e-book; each one is a link to the original.",
+    "export_label_contents": "Contents",
+    "export_label_image": "Image",
+    "export_label_video": "Video",
+    "export_label_audio": "Audio",
+    "export_label_embed": "Embedded content",
     "settings_link": "AI settings (optional)",
     "reader_empty": (
         "Couldn't find the article text on this page. "
@@ -1566,6 +1596,33 @@ def reader_tidy():
     except tidy.TidyError as error:
         return flask.jsonify(error=str(error)), 502
     return flask.jsonify(result)
+
+
+EXPORT_MAX_HTML = 10 * 1024 * 1024
+
+
+@app.route("/reader/export", methods=["POST"])
+def reader_export():
+    """Markdown or EPUB download of the article the Reader page is showing
+    (tidied, if AI tidy was applied). See export.py."""
+    problem = local_request_problem(json_only=True)
+    if problem:
+        return flask.jsonify(error=problem), 403
+    try:
+        fmt, meta, html = export.read_request(request.get_json(silent=True))
+    except ValueError as error:
+        return flask.jsonify(error=str(error)), 400
+    if len(html) > EXPORT_MAX_HTML:
+        return flask.jsonify(error="article too large to export"), 413
+    strings = load_strings()
+    labels = {key[len("export_label_"):]: value for key, value in strings.items() if key.startswith("export_label_")}
+    fragment = reader.clean_fragment(html, meta["url"] or request.host_url)
+    payload, mimetype, filename = export.build(fmt, meta, fragment, labels)
+    response = Response(payload, mimetype=mimetype)
+    response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 def render_reader(page_html, url, original_href, strings):
