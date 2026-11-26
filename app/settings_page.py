@@ -9,7 +9,7 @@ SETTINGS_TEMPLATE = """<!DOCTYPE html>
 <title>AI settings · 9001ft Ladder</title>
 <link rel="icon" href="/favicon.ico" type="image/png">
 <link rel="manifest" href="/manifest.webmanifest">
-<meta name="theme-color" content="#9b4dca">
+<meta name="theme-color" content="#fdf3dc">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <script src="/static/app.js" defer nonce="{{ nonce }}"></script>
 <style>
@@ -242,9 +242,14 @@ SETTINGS_TEMPLATE = """<!DOCTYPE html>
 """
 
 
+import theme  # noqa: E402
+
+SETTINGS_TEMPLATE = theme.with_theme(SETTINGS_TEMPLATE)
+
+
 def content_security_policy(nonce):
     return (
-        "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; "
+        "default-src 'none'; img-src 'self'; font-src 'self'; style-src 'unsafe-inline'; "
         f"script-src 'nonce-{nonce}'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; "
         "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
     )

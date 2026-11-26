@@ -36,7 +36,7 @@ log = logging.getLogger(__name__)
 # path prefix, so the catch-all page route can't sneak in under them.
 PUBLIC_ENDPOINTS = {
     "healthz", "login", "logout", "manifest", "app_icon", "service_worker",
-    "offline_page", "banner", "favicon", "static",
+    "offline_page", "banner", "favicon", "static", "font_file",
     # Sandboxed pages (fetched articles, kept copies) have an opaque origin, so
     # their font and stylesheet requests carry no login cookie. The relay only
     # serves archive.org files, so it's safe without a login.
@@ -293,7 +293,7 @@ LOGIN_TEMPLATE = """<!DOCTYPE html>
 <title>{{ login_title }} · 9001ft Ladder</title>
 <link rel="icon" href="/favicon.ico" type="image/png">
 <link rel="manifest" href="/manifest.webmanifest">
-<meta name="theme-color" content="#9b4dca">
+<meta name="theme-color" content="#fdf3dc">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <script src="/static/app.js" defer nonce="{{ nonce }}"></script>
 <style>
@@ -331,3 +331,8 @@ LOGIN_TEMPLATE = """<!DOCTYPE html>
 </body>
 </html>
 """
+
+
+import theme  # noqa: E402
+
+LOGIN_TEMPLATE = theme.with_theme(LOGIN_TEMPLATE, auto_dark=True)

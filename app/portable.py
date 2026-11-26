@@ -42,6 +42,7 @@ import export  # noqa: E402
 
 import auth  # noqa: E402
 import pwa  # noqa: E402
+import theme  # noqa: E402
 
 VERSION = "0.4.0"
 
@@ -297,10 +298,10 @@ html = """
     <title>9001ft Ladder</title>
     <link rel="icon" href="/favicon.ico" type="image/png">
     <link rel="manifest" href="/manifest.webmanifest">
-    <meta name="theme-color" content="#9b4dca">
+    <meta name="theme-color" content="#fdf3dc">
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
     <script src="/static/app.js" defer></script>
-    <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Open+Sans:wght@400;600&display=swap" rel="stylesheet" async>
+    <style>{{ font_face_css | safe }}</style>
     <style>
         * { box-sizing: border-box; }
         [hidden] { display: none !important; }
@@ -1197,6 +1198,7 @@ def render_main_page():
     }
     return flask.render_template_string(
         html,
+        font_face_css=theme.FONT_FACE_CSS,
         steps=build_steps(strings),
         ui_strings=ui_strings,
         climb=climb_settings,
@@ -1216,6 +1218,7 @@ def error_page(message, status, strings):
     nonce = secrets.token_urlsafe(16)
     body = flask.render_template_string(
         climb.ERROR_TEMPLATE,
+        font_face_css=theme.FONT_FACE_CSS,
         message=message,
         stuck_at=strings["feet_template"].replace("{feet}", str(status)),
         nonce=nonce,
@@ -1755,6 +1758,17 @@ def favicon():
         return Response(data, mimetype="image/png",
                         headers={"Cache-Control": "public, max-age=86400"})
     return "", 404
+
+
+@app.route("/fonts/<name>")
+def font_file(name):
+    """The bundled fonts (see theme.py). Only those files, cached for a year."""
+    path = theme.font_path(name)
+    if not path:
+        return "", 404
+    response = flask.send_file(path, mimetype="font/woff2", max_age=365 * 24 * 3600)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @app.route("/banner.webp")
@@ -2471,6 +2485,7 @@ def render_reader(page_html, url, original_href, strings, article=None):
     nonce = secrets.token_urlsafe(16)
     body = flask.render_template_string(
         reader.READER_TEMPLATE,
+        font_face_css=theme.FONT_FACE_CSS,
         article=article,
         source_url=url,
         original_href=original_href,

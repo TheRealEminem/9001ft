@@ -2086,5 +2086,63 @@ class IntegrationFixTests(unittest.TestCase):
         self.assertIn('src="https://example.com/news/pic.jpg"', content)
 
 
+class ThemeTests(unittest.TestCase):
+    """One look everywhere, with fonts bundled instead of loaded from a font service."""
+
+    def setUp(self):
+        env = patch.dict(os.environ, no_tidy_env(), clear=True)
+        env.start()
+        self.addCleanup(env.stop)
+        self.network = patch.object(web.requests.sessions.Session, "request", side_effect=AssertionError("Unexpected network access"))
+        self.network.start()
+        self.addCleanup(self.network.stop)
+        self.client = web.app.test_client()
+
+    def test_bundled_fonts_are_served_and_nothing_else(self):
+        for name in web.theme.FONT_FILES:
+            with self.subTest(name=name):
+                response = self.client.get("/fonts/" + name)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.mimetype, "font/woff2")
+                self.assertTrue(response.data.startswith(b"wOF2"))
+                response.close()
+        for bad in ("OFL-bangers.txt", "nope.woff2"):
+            self.assertEqual(self.client.get("/fonts/" + bad).status_code, 404)
+        self.assertIsNone(web.theme.font_path("../README.md"))
+
+    def test_fonts_load_without_a_login(self):
+        with patch.dict(os.environ, {"LADDER_PASSWORD": "pw", "LADDER_SECRET_KEY": "k" * 32}):
+            response = self.client.get("/fonts/bangers-latin.woff2")
+            self.assertEqual(response.status_code, 200)
+            response.close()
+            login = self.client.get("/login")
+        self.assertIn("--bg: #fdf3dc", login.get_data(as_text=True))
+        self.assertIn("font-src 'self'", login.headers["Content-Security-Policy"])
+
+    def test_no_page_calls_a_font_service(self):
+        root = Path(__file__).resolve().parents[1] / "app"
+        for path in root.glob("*.py"):
+            self.assertNotIn("fonts.googleapis", path.read_text(encoding="utf-8"), path.name)
+            self.assertNotIn("fonts.gstatic", path.read_text(encoding="utf-8"), path.name)
+
+    def test_every_page_has_the_theme_and_may_load_its_fonts(self):
+        web.page_cache[URL] = {"html": READER_PAGE, "timestamp": web.time.time()}
+        self.addCleanup(web.page_cache.clear)
+        pages = {"/": None, "/settings": "comic", "/library": "comic", "/offline": "comic",
+                 "/reader/" + URL: None, "/not-a-url": None}
+        for path, comic in pages.items():
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                body = response.get_data(as_text=True)
+                self.assertIn("@font-face { font-family: 'Bangers'", body)
+                csp = response.headers.get("Content-Security-Policy")
+                if csp:
+                    self.assertIn("font-src 'self'", csp)
+                if comic:
+                    self.assertIn("--bg: #fdf3dc", body)
+                    self.assertIn("--bg: #0f2428", body)
+                self.assertNotIn("#9b4dca", body.split("<body")[0].split("theme-color")[1][:40] if "theme-color" in body else "")
+
+
 if __name__ == "__main__":
     unittest.main()
