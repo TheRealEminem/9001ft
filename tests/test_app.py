@@ -156,7 +156,11 @@ class AppTests(unittest.TestCase):
         response = Mock(status_code=200, text=ARTICLE, url=URL, apparent_encoding="utf-8")
         with patch.object(web.requests, "get", return_value=response) as get:
             result = web.bypass_paywall("example.com/news/article", self.strings)
-        get.assert_called_once_with(URL, headers=web.googlebot_headers, timeout=30)
+        # An ordinary request first; this page is too short to be a whole article,
+        # so the crawler-style request follows.
+        self.assertEqual([call.kwargs["headers"] for call in get.call_args_list],
+                         [web.REAL_BROWSER_HEADERS, web.googlebot_headers])
+        get.assert_called_with(URL, headers=web.googlebot_headers, timeout=30)
         self.assertIn("Useful article content", result)
 
     def test_blocked_response_uses_archive(self):
@@ -967,8 +971,8 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.get_data(as_text=True)
         self.assertIn("How tall can a ladder get?", body)
-        # The page came from the person's own browser: no ladder "Original page" link.
-        self.assertNotIn(">Original page<", body)
+        # The page came from the person's own browser: 9001ft has no full copy to link to.
+        self.assertNotIn(">Full page<", body)
         self.assertIn("script-src 'nonce-", response.headers["Content-Security-Policy"])
 
     def test_reader_post_handles_large_pages(self):
@@ -2163,6 +2167,444 @@ class TidyModeTests(unittest.TestCase):
         self.assertEqual(s.tidy_mode(), "off")
         s.save(s.merge_draft({"mode": "off"}))
         self.assertEqual(s.tidy_mode(), "off", "a draft without tidy_mode keeps the saved one")
+
+
+PARAGRAPHS = "".join(f"<p>{LONG_TEXT[:400]} Part {n}.</p>" for n in range(1, 7))
+FULL_PAGE = f"""<html><head><title>A full article</title></head><body>
+<nav><a href="/">Home</a></nav>
+<article><h1>A full article</h1><h2>Rungs</h2>{PARAGRAPHS}</article>
+<footer>Small print</footer></body></html>"""
+WAYBACK_COPY = "https://web.archive.org/web/20261118081412id_/" + URL
+
+
+def page_response(text, status=200, url=URL):
+    return Mock(status_code=status, text=text, url=url, apparent_encoding="utf-8")
+
+
+class ReaderFirstBase(unittest.TestCase):
+    def setUp(self):
+        env = patch.dict(os.environ, {**no_tidy_env(), "LOCALE": "en"}, clear=True)
+        env.start()
+        self.addCleanup(env.stop)
+        self.network = patch.object(web.requests.sessions.Session, "request", side_effect=AssertionError("Unexpected network access"))
+        self.network.start()
+        self.addCleanup(self.network.stop)
+        for store in (web.page_cache, web._fetched_sources, web.jobs):
+            store.clear()
+            self.addCleanup(store.clear)
+        web.load_strings_for_locale.cache_clear()
+        self.client = web.app.test_client()
+        self.strings = web.load_strings()
+
+    def cache(self, page=None, source=None, url=URL):
+        web.page_cache[url] = {"html": page or FULL_PAGE, "timestamp": web.time.time(), "source": source}
+
+    def reader(self, **kwargs):
+        self.cache(**kwargs)
+        return self.client.get("/reader/" + URL).get_data(as_text=True)
+
+
+class LiveFirstTests(ReaderFirstBase):
+    """The site's own page is used when an ordinary request gets a whole article."""
+
+    def fetch(self, live, crawler=None):
+        """Run the fetch with one answer for the browser-style request and one for the crawler-style one."""
+        def get(url, headers=None, timeout=None, **kwargs):
+            answer = live if headers is web.REAL_BROWSER_HEADERS else crawler
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+        with patch.object(web.requests, "get", side_effect=get) as mock, \
+                patch.object(web, "fetch_via_archive_org", return_value=(None, None)), \
+                patch.object(web, "fetch_via_archive_ph", return_value=(None, None)):
+            result = web.bypass_paywall(URL, self.strings)
+        return result, [call.kwargs["headers"] for call in mock.call_args_list]
+
+    def test_live_page_with_a_full_article_is_used(self):
+        result, asked = self.fetch(page_response(FULL_PAGE))
+        self.assertIsInstance(result, str)
+        self.assertIn("Part 6.", result)
+        self.assertEqual(asked, [web.REAL_BROWSER_HEADERS])
+        self.assertEqual(web.take_source(URL), {"kind": "live"})
+        self.assertIsNone(web.take_source(URL), "a source is handed out once")
+
+    def test_challenge_page_falls_back_to_the_old_chain(self):
+        challenge = page_response("<html><title>Just a moment...</title><body>Checking your browser</body></html>")
+        result, asked = self.fetch(challenge, page_response(FULL_PAGE))
+        self.assertIn("Part 6.", result)
+        self.assertEqual(asked, [web.REAL_BROWSER_HEADERS, web.googlebot_headers])
+        self.assertEqual(web.take_source(URL), {"kind": "site"})
+
+    def test_short_live_page_falls_back(self):
+        teaser = FULL_PAGE.replace(PARAGRAPHS, f"<p>{LONG_TEXT[:600]}</p>")
+        self.assertGreater(web.reader.extract_article(teaser, URL)["chars"], 250)
+        result, asked = self.fetch(page_response(teaser), page_response(FULL_PAGE.replace("Part 6.", "Whole thing.")))
+        self.assertIn("Whole thing.", result)
+        self.assertEqual(asked, [web.REAL_BROWSER_HEADERS, web.googlebot_headers])
+        self.assertEqual(web.take_source(URL)["kind"], "site")
+
+    def test_live_errors_and_refusals_fall_back(self):
+        for live in (web.requests.exceptions.ConnectionError(), page_response(FULL_PAGE, status=403)):
+            result, asked = self.fetch(live, page_response(FULL_PAGE))
+            self.assertIn("Part 6.", result)
+            self.assertEqual(len(asked), 2)
+            self.assertEqual(web.take_source(URL)["kind"], "site")
+
+    def test_archive_sources_are_recorded_with_the_snapshot_date(self):
+        blocked = page_response("Blocked", status=403)
+        with patch.object(web.requests, "get", return_value=blocked), \
+                patch.object(web, "fetch_via_archive_org", return_value=(FULL_PAGE, WAYBACK_COPY)):
+            web.bypass_paywall(URL, self.strings)
+        self.assertEqual(web.take_source(URL), {"kind": "archive.org", "date": "2026-11-18"})
+        with patch.object(web.requests, "get", return_value=blocked), \
+                patch.object(web, "fetch_via_archive_org", return_value=(None, None)), \
+                patch.object(web, "fetch_via_archive_ph", return_value=(FULL_PAGE, "https://archive.ph/abc12")):
+            web.bypass_paywall(URL, self.strings)
+        self.assertEqual(web.take_source(URL), {"kind": "archive.today"})
+
+    def test_freedium_source_and_no_live_request_for_medium(self):
+        story = "https://medium.com/story"
+        with patch.object(web, "fetch_via_freedium", return_value=(FULL_PAGE, story)), patch.object(web.requests, "get") as get:
+            web.bypass_paywall(story, self.strings)
+        get.assert_not_called()
+        self.assertEqual(web.take_source(story), {"kind": "freedium"})
+
+    def test_odd_snapshot_addresses_have_no_date(self):
+        self.assertEqual(web.page_source("archive.org", "https://web.archive.org/web/2026/" + URL), {"kind": "archive.org", "date": ""})
+        self.assertEqual(web.page_source("archive.org", "https://web.archive.org/web/20269999000000/" + URL)["date"], "")
+        self.assertEqual(web.page_source("archive.org", URL)["date"], "")
+
+    def test_source_is_kept_beside_the_cached_page(self):
+        with patch.object(web.requests, "get", return_value=page_response(FULL_PAGE)):
+            body = self.client.get("/reader/" + URL).get_data(as_text=True)
+        entry = web.page_cache[URL]
+        self.assertEqual(entry["source"], {"kind": "live"})
+        self.assertIn("html", entry)
+        self.assertIn("timestamp", entry)
+        self.assertEqual(web.cached_source("example.com/news/article"), {"kind": "live"})
+        self.assertIn("From the live site", body)
+        self.assertEqual(web._fetched_sources, {})
+
+    def test_status_flow_records_the_source(self):
+        web.jobs["job"] = {"step": "queued", "result": None, "error": None}
+        with patch.object(web.requests, "get", return_value=page_response(FULL_PAGE)):
+            web.fetch_worker("job", URL, self.strings)
+        self.assertEqual(web.jobs["job"]["result"], URL)
+        self.assertEqual(web.page_cache[URL]["source"], {"kind": "live"})
+
+    def test_replaced_fetch_has_no_source(self):
+        with patch.object(web, "bypass_paywall", return_value=FULL_PAGE):
+            body = self.client.get("/reader/" + URL).get_data(as_text=True)
+        self.assertIsNone(web.page_cache[URL]["source"])
+        self.assertNotIn('id="page-source"', body)
+
+    def test_full_page_view_carries_the_source(self):
+        self.cache(source={"kind": "archive.today"})
+        response = self.client.get("/" + URL)
+        self.assertIn('id="ladder-buttons" data-source="archive.today"', response.get_data(as_text=True))
+        self.assertEqual(response.headers["Content-Security-Policy"], web.FETCHED_PAGE_CSP)
+        with patch.object(web.requests, "get", return_value=page_response(FULL_PAGE)):
+            body = self.client.get("/https://example.com/other").get_data(as_text=True)
+        self.assertIn('data-source="live"', body)
+
+
+class SourceBadgeTests(ReaderFirstBase):
+    def test_badge_for_each_source(self):
+        cases = [
+            ({"kind": "live"}, "From the live site", False),
+            ({"kind": "site"}, "From the website", False),
+            ({"kind": "archive.org", "date": "2026-11-18"}, "From archive.org&#39;s copy of 18 November 2026", True),
+            ({"kind": "archive.org", "date": ""}, "From archive.org&#39;s copy<", True),
+            ({"kind": "archive.today"}, "From archive.today&#39;s copy", True),
+            ({"kind": "freedium"}, "From Freedium (a Medium mirror)", False),
+        ]
+        for source, text, archived in cases:
+            with self.subTest(source=source):
+                body = self.reader(source=source)
+                self.assertIn(f'id="page-source" data-source="{source["kind"]}"', body)
+                self.assertIn(text, body)
+                self.assertEqual("Some pictures or styling may be missing." in body, archived)
+
+    def test_unknown_source_shows_no_badge(self):
+        self.assertNotIn('id="page-source"', self.reader())
+        self.assertEqual(web.source_label({"kind": "elsewhere"}, self.strings), ("", ""))
+
+    def test_bookmarklet_page_says_from_your_browser(self):
+        body = self.client.post("/reader", data={"html": FULL_PAGE, "url": URL}).get_data(as_text=True)
+        self.assertIn('data-source="browser"', body)
+        self.assertIn("From your browser", body)
+        self.assertNotIn('id="full-page"', body)
+
+    def test_reader_bar_links_are_renamed(self):
+        body = self.reader(source={"kind": "live"})
+        self.assertRegex(body, r'<a href="/' + re.escape(URL) + r'" id="full-page" title="The whole page as fetched, with its layout and scripts">Full page</a>')
+        live = re.search(r'<a [^>]*id="live-page"[^>]*>([^<]*)', body)
+        self.assertIn(f'href="{URL}"', live.group(0))
+        self.assertIn('title="Opens the real page in a new tab, with all its animations and interactive parts"', live.group(0))
+        self.assertIn('target="_blank"', live.group(0))
+        self.assertIn('rel="noopener noreferrer"', live.group(0))
+        self.assertTrue(live.group(1).startswith("Live page"))
+        self.assertNotIn(">Original page<", body)
+        self.assertNotIn(">Source ", body)
+
+
+def with_extra(markup):
+    return FULL_PAGE.replace("<h2>Rungs</h2>", "<h2>Rungs</h2>" + markup)
+
+
+BIG_SVG = '<svg viewBox="0 0 640 400">' + '<rect width="20" height="40"/>' * 12 + "</svg>"
+
+
+class InteractiveContentTests(ReaderFirstBase):
+    def count(self, markup):
+        return web.reader.extract_article(with_extra(markup), URL)["interactive"]
+
+    def test_plain_pages_have_none(self):
+        self.assertEqual(web.reader.extract_article(FULL_PAGE, URL)["interactive"], 0)
+        self.assertEqual(web.reader.extract_article(READER_PAGE, URL)["interactive"], 0)
+        self.assertEqual(self.count('<img src="a.jpg" alt=""><figure><img src="b.jpg" alt=""><figcaption>Photo</figcaption></figure>'), 0)
+
+    def test_chart_frames_count_and_videos_do_not(self):
+        for host in ("datawrapper.dwcdn.net/abc/1/", "flo.uri.sh/visualisation/1/embed", "e.infogram.com/x", "codepen.io/a/embed/b"):
+            with self.subTest(host=host):
+                self.assertEqual(self.count(f'<iframe src="https://{host}"></iframe>'), 1)
+        self.assertEqual(self.count('<iframe data-src="https://datawrapper.dwcdn.net/abc/1/"></iframe>'), 1)
+        self.assertEqual(self.count('<iframe src="https://www.youtube.com/embed/abc"></iframe>'), 0)
+        self.assertEqual(self.count('<iframe src="https://player.vimeo.com/video/1"></iframe>'), 0)
+
+    def test_adverts_and_hidden_frames_do_not_count(self):
+        self.assertEqual(self.count('<iframe src="https://securepubads.g.doubleclick.net/x"></iframe>'), 0)
+        self.assertEqual(self.count('<iframe src="https://charts.example/x" width="1" height="1"></iframe>'), 0)
+        self.assertEqual(self.count('<iframe src="https://charts.example/x" style="display: none"></iframe>'), 0)
+        self.assertEqual(self.count('<iframe></iframe>'), 0)
+        self.assertEqual(self.count('<div class="ad-slot"><iframe src="https://charts.example/x"></iframe></div>'), 0)
+        self.assertEqual(self.count('<aside><canvas></canvas></aside>'), 0)
+
+    def test_frames_outside_the_article_do_not_count(self):
+        page = FULL_PAGE.replace("<footer>", '<footer><iframe src="https://charts.example/x"></iframe><canvas></canvas>')
+        self.assertEqual(web.reader.extract_article(page, URL)["interactive"], 0)
+
+    def test_canvas_and_large_svg_count_but_icons_do_not(self):
+        self.assertEqual(self.count("<canvas id='chart'></canvas>"), 1)
+        self.assertEqual(self.count(BIG_SVG), 1)
+        self.assertEqual(self.count('<svg viewBox="0 0 24 24"><path d="M0,0"/></svg>'), 0)
+        self.assertEqual(self.count(BIG_SVG.replace("0 0 640 400", "0 0 24 24")), 0)
+        self.assertEqual(self.count("<figure>" + BIG_SVG.replace(' viewBox="0 0 640 400"', "") + "</figure>"), 1)
+
+    def test_scripted_figures_and_embeds_count_once(self):
+        self.assertEqual(self.count('<figure><div id="map"></div><script src="map.js"></script></figure>'), 1)
+        self.assertEqual(self.count('<figure><canvas></canvas><script src="chart.js"></script></figure>'), 1)
+        self.assertEqual(self.count('<div class="flourish-embed" data-src="visualisation/1"></div>'), 1)
+        self.assertEqual(self.count('<figure><script type="application/ld+json">{}</script><img src="a.jpg" alt=""></figure>'), 0)
+
+    def test_media_without_a_file_counts(self):
+        self.assertEqual(self.count("<video></video><audio src='blob:https://example.com/1'></audio>"), 2)
+        self.assertEqual(self.count('<video src="film.mp4"></video><audio><source src="talk.mp3"></audio>'), 0)
+
+    def test_several_pieces_are_counted(self):
+        self.assertEqual(self.count('<canvas></canvas><iframe src="https://e.infogram.com/x"></iframe>' + BIG_SVG), 3)
+
+    def test_notice_shows_only_for_interactive_articles(self):
+        self.assertNotIn('id="interactive-note"', self.reader())
+        body = self.reader(page=with_extra('<iframe src="https://datawrapper.dwcdn.net/abc/1/"></iframe>'))
+        note = body[body.index('id="interactive-note"'):body.index("</div>\n  </div>", body.index('id="interactive-note"'))]
+        self.assertIn("This article has interactive graphics that Reader view can&#39;t show.", note)
+        self.assertRegex(note, r'<a href="' + re.escape(URL) + r'" target="_blank" rel="noopener noreferrer">See them on the live page')
+        self.assertIn(f'<a href="/{URL}">Open the full page</a>', note)
+
+    def test_bookmarklet_notice_has_no_full_page_button(self):
+        page = with_extra("<canvas></canvas>")
+        body = self.client.post("/reader", data={"html": page, "url": URL}).get_data(as_text=True)
+        self.assertIn('id="interactive-note"', body)
+        self.assertIn("See them on the live page", body)
+        self.assertNotIn("Open the full page", body)
+
+    def test_no_notice_without_an_article(self):
+        body = self.reader(page="<html><body><p>Hi.</p><canvas></canvas></body></html>")
+        self.assertNotIn('id="interactive-note"', body)
+
+
+class JumbledTests(unittest.TestCase):
+    def jumbled(self, markup):
+        return web.reader.looks_jumbled(markup)
+
+    def test_ordinary_articles_are_not_jumbled(self):
+        self.assertFalse(self.jumbled(f"<h2>Rungs</h2>{PARAGRAPHS}"))
+        self.assertFalse(self.jumbled(PARAGRAPHS))
+        self.assertFalse(web.reader.extract_article(FULL_PAGE, URL)["jumbled"])
+        self.assertFalse(web.reader.extract_article(READER_PAGE, URL)["jumbled"])
+
+    def test_too_little_text_to_judge(self):
+        self.assertFalse(self.jumbled("<div>One</div><div>Two</div>" * 6))
+
+    def test_many_very_short_blocks(self):
+        scraps = "".join(f"<div>Scrap number {n}</div>" for n in range(60))
+        self.assertTrue(self.jumbled(scraps))
+        self.assertTrue(self.jumbled(scraps + PARAGRAPHS))
+
+    def test_short_list_items_and_table_cells_are_fine(self):
+        items = "<ul>" + "".join(f"<li><p>Item {n}</p></li>" for n in range(40)) + "</ul>"
+        cells = "<table>" + "".join(f"<tr><td><div>Cell {n}</div></td></tr>" for n in range(40)) + "</table>"
+        self.assertFalse(self.jumbled(f"<h2>Rungs</h2>{PARAGRAPHS}{items}{cells}"))
+
+    def test_wall_of_text_and_loose_text(self):
+        self.assertTrue(self.jumbled("<p>" + LONG_TEXT * 5 + "</p>"))
+        self.assertTrue(self.jumbled("<div><p>" + LONG_TEXT * 5 + "</p></div>"))
+        self.assertTrue(self.jumbled(LONG_TEXT * 2))
+
+    def test_no_real_paragraphs(self):
+        lines = "".join(f"<p>A line of about sixty characters, number {n:03d}, and so on.</p>" for n in range(30))
+        self.assertTrue(self.jumbled(lines))
+
+    def test_long_article_without_headings(self):
+        long_article = PARAGRAPHS * 5
+        self.assertGreaterEqual(len(BeautifulSoupText(long_article).split()), web.reader.LONG_ARTICLE_WORDS)
+        self.assertTrue(self.jumbled(long_article))
+        self.assertFalse(self.jumbled("<h2>Rungs</h2>" + long_article))
+
+    def test_extract_reports_a_jumbled_article(self):
+        scraps = "".join(f"<div>Scrap number {n} here</div>" for n in range(80))
+        article = web.reader.extract_article(f"<html><body><article>{scraps}</article></body></html>", URL)
+        self.assertTrue(article["content"])
+        self.assertTrue(article["jumbled"])
+
+
+def BeautifulSoupText(markup):
+    return web.BeautifulSoup(markup, "html.parser").get_text(" ")
+
+
+JUMBLED_PAGE = "<html><body><article>" + "".join(f"<div>Scrap number {n} here</div>" for n in range(80)) + "</article></body></html>"
+
+
+class TidyOfferTests(ReaderFirstBase):
+    """How Reader view offers AI tidy in each mode. No AI is ever called."""
+
+    def setUp(self):
+        super().setUp()
+        env = patch.dict(os.environ, TIDY_ENV)
+        env.start()
+        self.addCleanup(env.stop)
+        post = patch.object(web.tidy.requests, "post", side_effect=AssertionError("AI must not be called"))
+        post.start()
+        self.addCleanup(post.stop)
+
+    def page(self, mode, **kwargs):
+        with patch.object(web.ai_settings, "tidy_mode", return_value=mode):
+            return self.reader(**kwargs)
+
+    def card(self, body):
+        match = re.search(r'<aside class="tidy-card.*?</aside>', body, re.S)
+        return match.group(0) if match else None
+
+    def test_offer_rules(self):
+        article = {"content": "<p>x</p>", "jumbled": False}
+        offer = web.tidy_offer
+        self.assertIsNone(offer("off", {"kind": "archive.org"}, article))
+        self.assertIsNone(offer("suggest", {"kind": "live"}, {"content": ""}))
+        self.assertEqual(offer("suggest", {"kind": "live"}, article), {"size": "small", "reason": "", "auto": False})
+        self.assertEqual(offer("suggest", None, article), {"size": "small", "reason": "", "auto": False})
+        self.assertEqual(offer("suggest", {"kind": "archive.today"}, article), {"size": "big", "reason": "archive", "auto": False})
+        self.assertEqual(offer("auto", {"kind": "archive.org"}, article), {"size": "big", "reason": "archive", "auto": True})
+        self.assertEqual(offer("auto", {"kind": "site"}, article), {"size": "small", "reason": "", "auto": False})
+        self.assertEqual(offer("auto", {"kind": "site"}, {"content": "x", "jumbled": True}), {"size": "big", "reason": "jumbled", "auto": True})
+
+    def test_suggest_on_an_archive_copy_shows_the_big_card(self):
+        card = self.card(self.page("suggest", source={"kind": "archive.org", "date": "2026-11-18"}))
+        self.assertIn('class="tidy-card tidy-big"', card)
+        self.assertIn('data-mode="suggest" data-state="idle"', card)
+        self.assertNotIn("data-auto", card)
+        self.assertIn("This page came from an archive copy and may look a bit jumbled. Want AI to tidy the layout? "
+                      "It only rearranges; it never changes the words.", card)
+        self.assertRegex(card, r'id="tidy-yes">&#10024; <span id="tidy-yes-label">Tidy it up</span>')
+        self.assertIn('id="tidy-no">No thanks</button>', card)
+        self.assertIn('<svg class="tidy-art"', card)
+        self.assertIn('aria-hidden="true"', card)
+        self.assertRegex(card, r'id="tidy-progress"[^>]* hidden')
+
+    def test_suggest_on_a_live_page_is_gentle(self):
+        card = self.card(self.page("suggest", source={"kind": "live"}))
+        self.assertIn('class="tidy-card tidy-small"', card)
+        self.assertIn("Looks messy?", card)
+        self.assertIn("Tidy up with AI", card)
+        self.assertIn("No thanks", card)
+        self.assertNotIn("archive copy", card)
+
+    def test_suggest_on_a_jumbled_live_page_shows_the_big_card(self):
+        card = self.card(self.page("suggest", page=JUMBLED_PAGE, source={"kind": "live"}))
+        self.assertIn("tidy-big", card)
+        self.assertIn("This page looks a bit jumbled.", card)
+        self.assertNotIn("data-auto", card)
+
+    def test_auto_starts_on_archive_copies_and_jumbled_pages(self):
+        for kwargs in ({"source": {"kind": "archive.today"}}, {"page": JUMBLED_PAGE, "source": {"kind": "live"}}):
+            with self.subTest(kwargs=list(kwargs)):
+                card = self.card(self.page("auto", **kwargs))
+                self.assertIn('data-mode="auto" data-state="working" data-auto="1"', card)
+                self.assertIn("Tidying up", card)
+                self.assertRegex(card, r'id="tidy-actions" hidden')
+                self.assertNotRegex(card, r'id="tidy-progress"[^>]* hidden')
+
+    def test_auto_leaves_tidy_live_pages_alone(self):
+        card = self.card(self.page("auto", source={"kind": "live"}))
+        self.assertIn("tidy-small", card)
+        self.assertNotIn("data-auto", card)
+
+    def test_off_keeps_only_the_toolbar_button(self):
+        body = self.page("off", source={"kind": "archive.org", "date": "2026-11-18"})
+        self.assertIsNone(self.card(body))
+        self.assertIn('id="tidy"', body)
+
+    def test_no_card_without_ai_or_without_an_article(self):
+        with patch.dict(os.environ, no_tidy_env(), clear=True):
+            body = self.page("auto", source={"kind": "archive.org", "date": "2026-11-18"})
+        self.assertIsNone(self.card(body))
+        self.assertNotIn('id="tidy"', body)
+        self.assertIsNone(self.card(self.page("auto", page="<html><body><p>Hi.</p></body></html>", source={"kind": "archive.org"})))
+
+    def test_script_reuses_one_tidy_for_card_and_button(self):
+        body = self.page("auto", source={"kind": "archive.today"})
+        self.assertEqual(body.count('fetch("/reader/tidy"'), 1)
+        for needle in ('"auto_done": "Tidied automatically by AI"', '"show_original": "Show original"',
+                       'getAttribute("data-auto") === "1"', "tidyDeclined", "TIDY.kept_original"):
+            self.assertIn(needle, body)
+        self.assertIn("prefers-reduced-motion: no-preference", body)
+        csp = self.client.get("/reader/" + URL).headers["Content-Security-Policy"]
+        self.assertNotIn("unsafe-inline", csp.split("script-src")[1].split(";")[0])
+        self.assertNotRegex(body, r"<[^>]+\son[a-z]+=")
+
+    def test_library_copies_get_the_gentle_card(self):
+        article = {"title": "Kept", "site": "", "author": "", "published": "", "minutes": 1, "lead_image": "", "content": PARAGRAPHS}
+        with web.app.test_request_context("/"), patch.object(web.ai_settings, "tidy_mode", return_value="auto"):
+            body = web.render_reader("", URL, "/library/abc/", self.strings, article=article).get_data(as_text=True)
+        self.assertIn("tidy-small", self.card(body))
+        self.assertNotIn('id="page-source"', body)
+
+
+class ReaderDefaultTests(ReaderFirstBase):
+    def test_home_page_ticks_reader_view_by_default(self):
+        body = self.client.get("/").get_data(as_text=True)
+        self.assertRegex(body, r'<input type="checkbox" id="reader-mode" checked')
+        self.assertIn("Open in Reader view (recommended)", body)
+        self.assertIn("Untick for the full original layout.", body)
+        # Only an explicit "off" from an earlier visit unticks it.
+        self.assertIn("readerToggle.checked = store.get('readerMode') !== '0';", body)
+        self.assertIn("store.set('readerMode', this.checked ? '1' : '0');", body)
+
+    def test_sample_and_share_open_reader_view(self):
+        body = self.client.get("/").get_data(as_text=True)
+        self.assertIn(f'id="sample-link" href="/reader/{web.SAMPLE_URL}"', body)
+        self.assertIn("startClimb(CLIMB.sample_url, true);", body)
+        self.assertIn("reachSummit(openReader ? '/reader' + data.redirect : data.redirect);", body)
+        response = self.client.get("/share?url=" + URL)
+        self.assertEqual(response.headers["Location"], "/reader/" + URL)
+
+    def test_grandma_with_a_duster_is_decorative_and_script_free(self):
+        art = web.climb.duster_svg()
+        self.assertTrue(art.startswith('<svg class="tidy-art"'))
+        self.assertIn('aria-hidden="true"', art)
+        self.assertIn('class="duster"', art)
+        self.assertNotIn("<script", art)
+        self.assertNotRegex(art, r"\son[a-z]+=")
 
 
 if __name__ == "__main__":

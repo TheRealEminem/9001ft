@@ -211,8 +211,150 @@ def _prefer_live_image(img):
         img["srcset"] = ", ".join(candidates)
 
 
+# --- things Reader view can't show ------------------------------------------
+
+# Frames that are videos (Reader view keeps the common ones) rather than graphics.
+VIDEO_FRAME_RE = re.compile(
+    r"youtube(-nocookie)?\.com|youtu\.be|vimeo\.com|dailymotion\.com|twitch\.tv|ted\.com|wistia\.|brightcove\.|"
+    r"jwplayer\.|jwplatform\.|vidyard\.|streamable\.com|rumble\.com|/video/|/embed/video", re.I)
+# Frames nobody would miss: adverts, trackers, sign-in and comment widgets.
+JUNK_FRAME_RE = re.compile(
+    r"^(about:|javascript:|data:)|doubleclick|googlesyndication|googletagmanager|google\.com/recaptcha|"
+    r"amazon-adsystem|adservice|facebook\.com/(plugins|tr)|accounts\.google|disqus\.|/ads?[/.?]|"
+    r"consent|cookie", re.I)
+# Chart and demo services that draw with a script instead of a frame.
+EMBED_CLASS_RE = re.compile(r"flourish-embed|infogram-embed|tableauPlaceholder|datawrapper|cp_embed|codepen", re.I)
+# Parts of a page that aren't the article.
+ASIDE_RE = re.compile(
+    r"(^|[\s_-])(ads?|advert\w*|promo\w*|newsletter|comments?|share|social|related|sidebar|cookie|consent|banner)($|[\s_-])",
+    re.I)
+SVG_SHAPES = ["path", "rect", "circle", "ellipse", "line", "polyline", "polygon", "text"]
+
+
+def _number(value):
+    match = re.match(r"\s*(\d+(\.\d+)?)\s*(px)?\s*$", str(value or ""))
+    return float(match.group(1)) if match else None
+
+
+def _hidden(tag):
+    style = (tag.get("style") or "").replace(" ", "").lower()
+    if "display:none" in style or "visibility:hidden" in style or tag.has_attr("hidden"):
+        return True
+    return any(_number(tag.get(side)) is not None and _number(tag.get(side)) <= 2 for side in ("width", "height"))
+
+
+def _article_scope(soup):
+    """The part of the page to look in: its biggest <article>, else <main>, else the body."""
+    articles = soup.find_all("article")
+    if articles:
+        return max(articles, key=lambda tag: len(tag.get_text()))
+    return soup.find("main") or soup.find(attrs={"role": "main"}) or soup.body or soup
+
+
+def _outside_article(tag, scope):
+    for parent in tag.parents:
+        if parent is scope:
+            return False
+        if parent.name in ("nav", "footer", "aside", "form"):
+            return True
+        label = " ".join(parent.get("class") or []) + " " + (parent.get("id") or "")
+        if ASIDE_RE.search(label):
+            return True
+    return False
+
+
+def _svg_is_figure(svg):
+    """A chart or diagram, not an icon or a logo."""
+    if len(svg.find_all(SVG_SHAPES)) < 10:
+        return False
+    width, height = _number(svg.get("width")), _number(svg.get("height"))
+    box = re.split(r"[\s,]+", (svg.get("viewbox") or svg.get("viewBox") or "").strip())
+    if (width is None or height is None) and len(box) == 4:
+        width, height = _number(box[2]), _number(box[3])
+    if width is None or height is None:
+        return svg.find_parent("figure") is not None
+    return width >= 200 and height >= 120
+
+
+def count_interactive(soup):
+    """How many interactive or embedded pieces of the article Reader view
+    can't show: chart and demo frames, canvases, large inline SVG figures,
+    figures drawn by a script, and video or audio with no file to play."""
+    scope = _article_scope(soup)
+    found = []
+
+    def inside(tag, others):
+        return any(parent is other for parent in tag.parents for other in others)
+
+    def add(tag):
+        if not _hidden(tag) and not _outside_article(tag, scope) and not inside(tag, found):
+            found.append(tag)
+
+    for frame in scope.find_all("iframe"):
+        src = (frame.get("src") or frame.get("data-src") or frame.get("data-lazy-src") or "").strip()
+        if src and not VIDEO_FRAME_RE.search(src) and not JUNK_FRAME_RE.search(src):
+            add(frame)
+    for canvas in scope.find_all("canvas"):
+        add(canvas)
+    for svg in scope.find_all("svg"):
+        if _svg_is_figure(svg):
+            add(svg)
+    for media in scope.find_all(["video", "audio"]):
+        sources = [media.get("src")] + [source.get("src") for source in media.find_all("source")]
+        if not any(src and not src.strip().lower().startswith("blob:") for src in sources):
+            add(media)
+    for embed in scope.find_all(class_=EMBED_CLASS_RE):
+        if not embed.find(["iframe", "canvas", "svg"]):
+            add(embed)
+    for figure in scope.find_all("figure"):
+        script = figure.find("script")
+        if script and "json" not in (script.get("type") or "") and not any(inside(tag, [figure]) for tag in found):
+            add(figure)
+    return len(found)
+
+
+# --- does the article need tidying? ----------------------------------------
+
+JUMBLE_MIN_CHARS = 600        # too little text to judge below this
+SHORT_BLOCK_CHARS = 40        # "a very short text block"
+REAL_PARAGRAPH_CHARS = 100
+WALL_OF_TEXT_CHARS = 2500     # one block this long has lost its paragraphs
+LONG_ARTICLE_WORDS = 1500     # an article this long normally has headings
+_BLOCK_CONTAINERS = ["p", "div", "section", "blockquote", "ul", "ol", "table", "pre", "figure",
+                     "h1", "h2", "h3", "h4", "h5", "h6"]
+
+
+def looks_jumbled(fragment):
+    """A rough guess that an extracted article lost its layout: mostly scraps
+    of a few words, hardly any real paragraphs, or a long text with no
+    headings. Used to offer (or, in "auto" mode, start) AI tidy."""
+    if isinstance(fragment, str):
+        fragment = BeautifulSoup(fragment, "html.parser")
+    text = fragment.get_text(" ", strip=True)
+    if len(text) < JUMBLE_MIN_CHARS:
+        return False
+    blocks = []
+    for tag in fragment.find_all(["p", "div", "section", "blockquote"]):
+        if tag.find(_BLOCK_CONTAINERS) or tag.find_parent(["li", "table", "figure"]):
+            continue
+        length = len(tag.get_text(" ", strip=True))
+        if length:
+            blocks.append(length)
+    if not blocks:
+        return True  # plenty of text and not one paragraph
+    short = sum(1 for length in blocks if length < SHORT_BLOCK_CHARS)
+    real = sum(1 for length in blocks if length >= REAL_PARAGRAPH_CHARS)
+    if len(blocks) >= 10 and short * 2 >= len(blocks):
+        return True
+    if max(blocks) >= WALL_OF_TEXT_CHARS or (sum(blocks) >= 1500 and real == 0):
+        return True
+    return len(text.split()) >= LONG_ARTICLE_WORDS and not fragment.find(["h2", "h3", "h4"])
+
+
 def extract_article(page_html, page_url):
-    """Return a dict for READER_TEMPLATE: title, site, author, date, minutes, content."""
+    """Return a dict for READER_TEMPLATE: title, site, author, date, minutes,
+    content, plus chars (length of the article text), interactive (pieces
+    Reader view can't show) and jumbled (see looks_jumbled)."""
     soup = BeautifulSoup(page_html, "html.parser")
     base_tag = soup.find("base", href=True)
     # A relative <base href="/news/"> is relative to the page itself.
@@ -231,6 +373,7 @@ def extract_article(page_html, page_url):
     lang = (html_tag.get("lang") or html_tag.get("xml:lang") or "").strip() if html_tag else ""
     lang = lang if LANG_RE.match(lang) else ""
 
+    interactive = count_interactive(soup)
     _promote_lazy_images(soup)
     document = Document(str(soup), url=base_url)
     fragment = _clean_fragment(document.summary(html_partial=True), base_url)
@@ -243,6 +386,7 @@ def extract_article(page_html, page_url):
 
     text = fragment.get_text(" ", strip=True)
     words = len(text.split())
+    found = len(text) >= MIN_ARTICLE_CHARS
 
     if lead_image and not fragment.find("img"):
         lead_image = urljoin(base_url, lead_image)
@@ -257,7 +401,10 @@ def extract_article(page_html, page_url):
         "minutes": max(1, round(words / WORDS_PER_MINUTE)),
         "lead_image": lead_image,
         "lang": lang,
-        "content": str(fragment) if len(text) >= MIN_ARTICLE_CHARS else "",
+        "content": str(fragment) if found else "",
+        "chars": len(text) if found else 0,
+        "interactive": interactive if found else 0,
+        "jumbled": found and looks_jumbled(fragment),
     }
 
 
@@ -343,7 +490,101 @@ READER_TEMPLATE = """<!DOCTYPE html>
     font: 400 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     color: var(--muted); padding-bottom: 24px; margin-bottom: 32px; border-bottom: 1px solid var(--rule);
   }
-  .meta span + span::before { content: "·"; margin: 0 8px; }
+  .meta > span + span::before { content: "·"; margin: 0 8px; }
+  /* Where the page came from */
+  .from { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 12px; font-size: 13.5px; }
+  .from b {
+    display: inline-flex; align-items: center; gap: 7px; font-weight: 600; color: var(--text);
+    background: var(--quote); border-radius: 999px; padding: 3px 11px 3px 9px;
+  }
+  .from b::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: #4f9a4c; }
+  .from[data-source^="archive"] b::before { background: #ee7b22; }
+  .from[data-source="freedium"] b::before, .from[data-source="browser"] b::before { background: var(--link); }
+  /* Things Reader view can't show */
+  .notice {
+    font: 400 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--quote); border-left: 4px solid #ee7b22; border-radius: 6px;
+    padding: 12px 16px; margin: 0 0 26px;
+  }
+  .notice p { margin: 0 0 10px; }
+  .notice-actions { display: flex; flex-wrap: wrap; gap: 8px 10px; }
+  .notice a {
+    font-weight: 600; font-size: 14px; color: var(--text); text-decoration: none;
+    background: var(--bg); border: 1px solid var(--rule); border-radius: 999px; padding: 6px 13px;
+  }
+  .notice a:hover { border-color: var(--muted); }
+  .notice a:focus-visible, .tidy-card button:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+  /* AI tidy card: a small comic panel */
+  .tidy-card {
+    --card-bg: #fff8e7; --card-line: #1d2b30; --pop: #ffcf33; --go: #c4301f;
+    display: flex; align-items: center; gap: 18px; margin: 0 0 30px; padding: 14px 18px;
+    font: 400 15.5px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--text);
+    background: var(--card-bg); border: 2px solid var(--card-line); border-radius: 14px;
+    box-shadow: 5px 5px 0 var(--pop);
+  }
+  :root[data-theme="dark"] .tidy-card { --card-bg: #202227; --card-line: #e6e4df; --pop: #8a6d12; }
+  :root[data-theme="sepia"] .tidy-card { --card-bg: #fbf3dc; --card-line: #3b2f22; --pop: #e0a92e; }
+  @media (prefers-color-scheme: dark) {
+    :root[data-theme="auto"] .tidy-card { --card-bg: #202227; --card-line: #e6e4df; --pop: #8a6d12; }
+  }
+  .tidy-card[hidden], .tidy-card [hidden] { display: none; }
+  .tidy-art { flex: none; width: 104px; height: auto; overflow: visible; }
+  .tidy-art .pose-shrug { display: none; }
+  .tidy-body { flex: 1; min-width: 0; }
+  .tidy-title {
+    margin: 0 0 2px; font: 400 25px/1.1 Bangers, Impact, 'Arial Narrow Bold', sans-serif;
+    letter-spacing: 0.04em; color: var(--card-line);
+  }
+  .tidy-text { margin: 0; }
+  .tidy-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 12px; }
+  .tidy-yes {
+    font: 600 15px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #fff; background: var(--go);
+    border: 2px solid var(--card-line); border-radius: 999px; padding: 9px 16px; cursor: pointer;
+    box-shadow: 2px 2px 0 var(--card-line);
+  }
+  .tidy-no, .tidy-link { font: inherit; color: var(--muted); background: none; border: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+  .tidy-no { font-size: 14px; padding: 9px 6px; }
+  .tidy-link { color: var(--link); padding: 0; }
+  .tidy-no:hover { color: var(--text); }
+  .tidy-progress {
+    height: 12px; margin-top: 12px; overflow: hidden; background: var(--bg);
+    border: 2px solid var(--card-line); border-radius: 999px;
+  }
+  .tidy-progress i {
+    display: block; width: 100%; height: 100%;
+    background: repeating-linear-gradient(-45deg, var(--pop) 0 10px, #ee7b22 10px 20px); background-size: 28.28px 100%;
+  }
+  .tidy-small {
+    gap: 12px; padding: 7px 14px; font-size: 14.5px; background: var(--quote);
+    border: 1px solid var(--rule); border-radius: 10px; box-shadow: none;
+  }
+  .tidy-small .tidy-art { width: 48px; }
+  .tidy-small .tidy-title { display: none; }
+  .tidy-small .tidy-body { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+  .tidy-small .tidy-actions { margin-top: 0; }
+  .tidy-small .tidy-yes {
+    font-size: 14px; color: var(--text); background: var(--bg); border: 1px solid var(--rule);
+    padding: 7px 12px; box-shadow: none;
+  }
+  .tidy-small .tidy-progress { flex: 1 1 120px; margin-top: 0; }
+  @keyframes tidy-dust { 0%, 100% { transform: rotate(-7deg); } 50% { transform: rotate(9deg); } }
+  @keyframes tidy-twinkle { 0%, 100% { transform: scale(0.5); opacity: 0.35; } 50% { transform: scale(1); opacity: 1; } }
+  @keyframes tidy-stripes { to { background-position: 28.28px 0; } }
+  @keyframes tidy-in { from { opacity: 0; transform: translateY(6px); } }
+  @media (prefers-reduced-motion: no-preference) {
+    .tidy-card { animation: tidy-in 0.35s ease-out both; }
+    /* A few sweeps to say hello, then she holds still unless she's working. */
+    .tidy-art .duster { transform-origin: 86px 46px; animation: tidy-dust 2.4s ease-in-out 3; }
+    .tidy-art .sparkle { transform-box: fill-box; transform-origin: center; animation: tidy-twinkle 2.4s ease-in-out 3; }
+    .tidy-art .sparkle-1 { animation-delay: 0.8s; }
+    .tidy-art .sparkle-2 { animation-delay: 1.6s; }
+    .tidy-card[data-state="working"] .duster { animation: tidy-dust 0.8s ease-in-out infinite; }
+    .tidy-card[data-state="working"] .sparkle { animation-iteration-count: infinite; animation-duration: 1.2s; }
+    .tidy-progress i { animation: tidy-stripes 0.9s linear infinite; }
+    .tidy-yes { transition: transform 0.12s, box-shadow 0.12s; }
+    .tidy-big .tidy-yes:hover { transform: translate(-1px, -1px); box-shadow: 3px 3px 0 var(--card-line); }
+    .tidy-big .tidy-yes:active { transform: translate(2px, 2px); box-shadow: none; }
+  }
   article a { color: var(--link); text-underline-offset: 2px; }
   article p { margin: 0 0 1.1em; }
   article h2, article h3, article h4 { line-height: 1.3; margin: 1.8em 0 0.6em; }
@@ -397,7 +638,7 @@ READER_TEMPLATE = """<!DOCTYPE html>
   .print-source { display: none; }
   @media print {
     :root, :root[data-theme] { --bg: #fff; --text: #000; --muted: #444; --rule: #bbb; --link: #000; --quote: #f2f2f2; }
-    .bar, .tidy-note, .listen-panel, .menu { display: none !important; }
+    .bar, .tidy-note, .tidy-card, .notice, .listen-panel, .menu { display: none !important; }
     body { background: #fff; color: #000; font-size: 12pt !important; }
     main { max-width: none; padding: 0; }
     .print-source { display: block; font: 400 9pt/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #444; word-break: break-all; margin: -20px 0 24px; }
@@ -411,15 +652,18 @@ READER_TEMPLATE = """<!DOCTYPE html>
     article iframe { display: none; }
     @page { margin: 2cm 1.8cm; }
   }
-  @media (max-width: 600px) { :root { --size: 18px; } h1.title { font-size: 1.6em; } main { padding-top: 28px; } }
+  @media (max-width: 600px) {
+    :root { --size: 18px; } h1.title { font-size: 1.6em; } main { padding-top: 28px; }
+    .tidy-big { gap: 12px; padding: 12px 14px; } .tidy-big .tidy-art { width: 72px; align-self: flex-start; }
+  }
 </style>
 </head>
 <body>
 <header class="bar">
   <div class="bar-inner">
     <a class="brand" href="/">9001ft</a>
-    {% if original_href %}<a href="{{ original_href }}">{{ reader_original }}</a>{% endif %}
-    <a href="{{ source_url }}" rel="noopener noreferrer">{{ reader_source }} &#8599;</a>
+    {% if original_href %}<a href="{{ original_href }}" id="full-page" title="{{ reader_original_title }}">{{ reader_original }}</a>{% endif %}
+    <a href="{{ source_url }}" id="live-page" title="{{ reader_source_title }}" target="_blank" rel="noopener noreferrer">{{ reader_source }} &#8599;</a>
     {% if keep_href %}<a href="{{ keep_href }}" id="keep-copy">&#128204; {{ keep_button }}</a>{% endif %}
     <button type="button" id="smaller" title="{{ reader_smaller }}" aria-label="{{ reader_smaller }}">A&minus;</button>
     <button type="button" id="larger" title="{{ reader_larger }}" aria-label="{{ reader_larger }}">A+</button>
@@ -460,15 +704,41 @@ READER_TEMPLATE = """<!DOCTYPE html>
     {% if article.author %}<span>{{ article.author }}</span>{% endif %}
     {% if article.published %}<span>{{ article.published }}</span>{% endif %}
     {% if article.content %}<span>{{ reader_minutes.replace('{minutes}', article.minutes|string) }}</span>{% endif %}
+    {% if source_text %}
+    <div class="from" id="page-source" data-source="{{ page_source }}"><b>{{ source_text }}</b>{% if source_note %} <small>{{ source_note }}</small>{% endif %}</div>
+    {% endif %}
   </div>
   <p class="print-source">{{ source_url }}</p>
+  {% if article.content and article.interactive %}
+  <div class="notice" id="interactive-note" role="note">
+    <p>{{ interactive_note }}</p>
+    <div class="notice-actions">
+      <a href="{{ source_url }}" target="_blank" rel="noopener noreferrer">{{ interactive_live }} &#8599;</a>
+      {% if original_href %}<a href="{{ original_href }}">{{ interactive_full }}</a>{% endif %}
+    </div>
+  </div>
+  {% endif %}
+  {% if tidy_enabled and tidy_offer and article.content %}
+  <aside class="tidy-card tidy-{{ tidy_offer.size }}" id="tidy-card" data-mode="{{ tidy_mode }}" data-state="{{ 'working' if tidy_offer.auto else 'idle' }}"{% if tidy_offer.auto %} data-auto="1"{% endif %} aria-label="{{ tidy_button }}">
+    {{ tidy_art | safe }}
+    <div class="tidy-body">
+      <p class="tidy-title" id="tidy-card-title">{{ tidy_card_working_title if tidy_offer.auto else tidy_card_title }}</p>
+      <p class="tidy-text"><span id="tidy-card-text" role="status">{% if tidy_offer.auto %}{{ tidy_working_note }}{% elif tidy_offer.reason == 'archive' %}{{ tidy_card_archive }}{% elif tidy_offer.reason == 'jumbled' %}{{ tidy_card_jumbled }}{% else %}{{ tidy_card_gentle }}{% endif %}</span><button type="button" class="tidy-link" id="tidy-toggle" hidden>{{ tidy_show_original }}</button></p>
+      <div class="tidy-progress" id="tidy-progress" aria-hidden="true"{% if not tidy_offer.auto %} hidden{% endif %}><i></i></div>
+      <div class="tidy-actions" id="tidy-actions"{% if tidy_offer.auto %} hidden{% endif %}>
+        <button type="button" class="tidy-yes" id="tidy-yes">&#10024; <span id="tidy-yes-label">{{ tidy_card_yes if tidy_offer.size == 'big' else tidy_card_gentle_button }}</span></button>
+        <button type="button" class="tidy-no" id="tidy-no">{{ tidy_card_no }}</button>
+      </div>
+    </div>
+  </aside>
+  {% endif %}
   <p class="tidy-note" id="tidy-note" role="status" hidden></p>
   <p class="tidy-note" id="export-note" role="status" hidden></p>
   {% if article.lead_image %}<img class="lead" src="{{ article.lead_image }}" alt="">{% endif %}
   {% if article.content %}
   <article{% if article.lang %} lang="{{ article.lang }}"{% endif %}>{{ article.content | safe }}</article>
   {% else %}
-  <p class="empty">{{ reader_empty }} <a href="{{ original_href or source_url }}">{{ reader_original }}</a></p>
+  <p class="empty">{{ reader_empty }} <a href="{{ original_href or source_url }}">{{ reader_original if original_href else reader_source }}</a></p>
   {% endif %}
 </main>
 <script nonce="{{ nonce }}">
@@ -508,20 +778,54 @@ READER_TEMPLATE = """<!DOCTYPE html>
     var TIDY = {{ tidy_strings | tojson }};
     var article = document.querySelector("article");
     var note = document.getElementById("tidy-note");
-    var original = null, tidied = null, showingTidy = false;
+    // The card (when the page has one) and the toolbar button drive the same tidy.
+    var card = document.getElementById("tidy-card");
+    function part(id) { return card ? document.getElementById(id) : null; }
+    var cardTitle = part("tidy-card-title"), cardText = part("tidy-card-text"), cardToggle = part("tidy-toggle");
+    var cardActions = part("tidy-actions"), cardProgress = part("tidy-progress"), cardYesLabel = part("tidy-yes-label");
+    var original = null, tidied = null, showingTidy = false, busy = false;
+    // "No thanks" is remembered for this page, as a short hash rather than its address.
+    var pageId = (function (text) {
+      var hash = 5381;
+      for (var i = 0; i < text.length; i++) { hash = ((hash << 5) + hash + text.charCodeAt(i)) | 0; }
+      return String(hash >>> 0);
+    })({{ source_url | tojson }});
+    function declined() {
+      try { var list = JSON.parse(load("tidyDeclined", "[]")); return Array.isArray(list) ? list : []; }
+      catch (e) { return []; }
+    }
     function label(text) { tidyButton.textContent = text; }
-    tidyButton.onclick = function () {
-      if (tidied !== null) {
-        showingTidy = !showingTidy;
-        article.innerHTML = showingTidy ? tidied : original;
-        label(showingTidy ? TIDY.show_original : TIDY.show_tidy);
+    // The card tells the story while it's showing; otherwise the note under the title does.
+    function show(state, text, detail) {
+      if (!card || card.hidden) {
+        note.hidden = false;
+        note.textContent = detail || text;
         return;
       }
+      note.hidden = true;
+      card.setAttribute("data-state", state);
+      cardTitle.textContent = TIDY["card_" + state + "_title"] || TIDY.card_title;
+      cardText.textContent = text + (state === "done" ? " \\u00b7 " : "");
+      cardText.title = detail && detail !== text ? detail : "";
+      cardProgress.hidden = state !== "working";
+      cardActions.hidden = state !== "failed";
+      cardToggle.hidden = state !== "done";
+      if (state === "failed") { cardYesLabel.textContent = TIDY.card_retry; }
+    }
+    function toggle() {
+      showingTidy = !showingTidy;
+      article.innerHTML = showingTidy ? tidied : original;
+      var text = showingTidy ? TIDY.show_original : TIDY.show_tidy;
+      label(text);
+      if (cardToggle) { cardToggle.textContent = text; }
+    }
+    function run(automatic) {
+      if (busy || tidied !== null) { return; }
+      busy = true;
       original = article.innerHTML;
       tidyButton.disabled = true;
       label(TIDY.working);
-      note.hidden = false;
-      note.textContent = TIDY.working_note;
+      show("working", TIDY.working_note);
       fetch("/reader/tidy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -536,15 +840,31 @@ READER_TEMPLATE = """<!DOCTYPE html>
         showingTidy = true;
         article.innerHTML = tidied;
         label(TIDY.show_original);
+        if (cardToggle) { cardToggle.textContent = TIDY.show_original; }
         var s = data.stats;
-        note.textContent = TIDY.done.replace("{model}", data.model).replace("{seconds}", data.seconds)
+        var summary = TIDY.done.replace("{model}", data.model).replace("{seconds}", data.seconds)
           .replace("{headings}", s.headings).replace("{joined}", s.joined)
           .replace("{lists}", s.lists).replace("{dropped}", s.dropped_words);
+        show("done", automatic ? TIDY.auto_done : summary, summary);
       }).catch(function (error) {
-        note.textContent = TIDY.failed.replace("{reason}", error.message);
+        // Nothing was changed: the article is still the original.
+        show("failed", TIDY.failed.replace("{reason}", error.message) + " " + TIDY.kept_original);
         label("\\u2728 " + TIDY.button);
-      }).then(function () { tidyButton.disabled = false; });
-    };
+      }).then(function () { busy = false; tidyButton.disabled = false; });
+    }
+    tidyButton.onclick = function () { if (tidied !== null) { toggle(); } else { run(false); } };
+    if (card) {
+      document.getElementById("tidy-yes").onclick = function () { run(false); };
+      cardToggle.onclick = toggle;
+      document.getElementById("tidy-no").onclick = function () {
+        card.hidden = true;
+        var list = declined().filter(function (id) { return id !== pageId; });
+        list.push(pageId);
+        save("tidyDeclined", JSON.stringify(list.slice(-200)));
+      };
+      if (declined().indexOf(pageId) >= 0) { card.hidden = true; }
+      else if (card.getAttribute("data-auto") === "1") { run(true); }
+    }
   }
 
   var articleEl = document.querySelector("article");
@@ -766,7 +1086,7 @@ READER_TEMPLATE = """<!DOCTYPE html>
     };
     // Tidy swaps the article out: stop first so the highlight isn't saved with it.
     document.addEventListener("click", function (event) {
-      if ((playing || current) && event.target.closest && event.target.closest("#tidy")) { finish(LISTEN.stopped); }
+      if ((playing || current) && event.target.closest && event.target.closest("#tidy, #tidy-yes, #tidy-toggle")) { finish(LISTEN.stopped); }
     }, true);
     window.addEventListener("pagehide", silence);
     window.addEventListener("beforeunload", silence);
