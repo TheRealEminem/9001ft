@@ -11,7 +11,7 @@
   "step_connect": "サイトに接続しています...",
   "step_fetch": "ページのコンテンツをダウンロードしています...",
   "step_detect": "アンチボット対策を確認しています...",
-  "step_fallback_freedium": "Freedium を試しています（Medium 回避）...",
+  "step_fallback_freedium": "Freedium を試しています（Medium ミラー）...",
   "step_fallback_org": "archive.org のスナップショットを試しています...",
   "step_fallback_ph": "archive.today / archive.ph のスナップショットを試しています...",
   "step_process": "記事を処理しています...",

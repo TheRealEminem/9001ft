@@ -11,7 +11,7 @@
   "step_connect": "Conectando al sitio web...",
   "step_fetch": "Descargando el contenido de la página...",
   "step_detect": "Comprobando desafíos anti-bot...",
-  "step_fallback_freedium": "Probando Freedium (bypass de Medium)...",
+  "step_fallback_freedium": "Probando Freedium (espejo de Medium)...",
   "step_fallback_org": "Probando instantánea de archive.org...",
   "step_fallback_ph": "Probando instantánea de archive.today / archive.ph...",
   "step_process": "Procesando el artículo...",

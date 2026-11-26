@@ -11,7 +11,7 @@
   "step_connect": "Connecting to website...",
   "step_fetch": "Downloading page content...",
   "step_detect": "Checking for anti-bot challenges...",
-  "step_fallback_freedium": "Trying Freedium (Medium bypass)...",
+  "step_fallback_freedium": "Trying Freedium (Medium mirror)...",
   "step_fallback_org": "Trying archive.org snapshot...",
   "step_fallback_ph": "Trying archive.today / archive.ph snapshot...",
   "step_process": "Processing article...",

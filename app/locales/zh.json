@@ -11,7 +11,7 @@
   "step_connect": "正在连接到网站...",
   "step_fetch": "正在下载页面内容...",
   "step_detect": "正在检查反机器人挑战...",
-  "step_fallback_freedium": "尝试 Freedium（绕过 Medium）...",
+  "step_fallback_freedium": "尝试 Freedium（Medium 镜像）...",
   "step_fallback_org": "尝试 archive.org 快照...",
   "step_fallback_ph": "尝试 archive.today / archive.ph 快照...",
   "step_process": "正在处理文章...",

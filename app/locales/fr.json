@@ -11,7 +11,7 @@
   "step_connect": "Connexion au site web...",
   "step_fetch": "Téléchargement du contenu de la page...",
   "step_detect": "Vérification des protections anti-bot...",
-  "step_fallback_freedium": "Essai de Freedium (contournement de Medium)...",
+  "step_fallback_freedium": "Essai de Freedium (miroir de Medium)...",
   "step_fallback_org": "Essai d'un instantané archive.org...",
   "step_fallback_ph": "Essai d'un instantané archive.today / archive.ph...",
   "step_process": "Traitement de l'article...",

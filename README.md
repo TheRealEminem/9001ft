@@ -76,7 +76,7 @@ A few sites block forms from sending data to other addresses (a `form-action` se
 
 When you paste a link, 9001ft asks the site for the page the way Google's crawler does, since many sites give search engines the full text. Many large sites now check that such requests really come from Google, so when that fails it tries public copies: Freedium for Medium, then the Internet Archive's Wayback Machine, then archive.today. The status page shows each step. (Multi-source fallbacks from [@JRS1986](https://github.com/JRS1986).)
 
-Public copies have limits. archive.today saves pages without any JavaScript, so animations and interactive graphics can't come back from there. archive.org keeps them, and 9001ft loads its copies of the page's styles, images and scripts. Custom fonts and some icons from archive.org still don't load, because archive.org doesn't let other sites use those files.
+Public copies have limits. archive.today saves pages without any JavaScript, so animations and interactive graphics can't come back from there. archive.org keeps them, and 9001ft loads its copies of the page's styles, images and scripts. archive.org doesn't let other sites use its copies of fonts and CSS icons, so 9001ft passes stylesheets, fonts and icons through a small relay on your own server that adds the permission browsers need. The relay only fetches from archive.org.
 
 Reader view uses [readability](https://github.com/buriy/python-readability) to find the article in the page, then strips everything else: scripts, styles, event handlers and tracking. It's served with a strict Content Security Policy, so nothing from the article can run code on your machine.
 

@@ -11,7 +11,7 @@
   "step_connect": "웹사이트에 연결하는 중...",
   "step_fetch": "페이지 콘텐츠를 다운로드하는 중...",
   "step_detect": "봇 차단 여부를 확인하는 중...",
-  "step_fallback_freedium": "Freedium을 시도하는 중 (Medium 우회)...",
+  "step_fallback_freedium": "Freedium을 시도하는 중 (Medium 미러)...",
   "step_fallback_org": "archive.org 스냅샷을 시도하는 중...",
   "step_fallback_ph": "archive.today / archive.ph 스냅샷을 시도하는 중...",
   "step_process": "기사를 처리하는 중...",
