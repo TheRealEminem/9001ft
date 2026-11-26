@@ -369,6 +369,18 @@ class TidyTests(unittest.TestCase):
         self.assertIn(long_text, result["html"])
         self.assertEqual(result["model"], "main-model")
 
+    def test_retries_once_when_the_answer_is_not_json(self):
+        replies = [chat_reply("Sure! Here's what I'd change: block 2 is a heading."),
+                   chat_reply('{"blocks": [{"ids": [2], "as": "h2"}]}')]
+        with patch.object(web.tidy.requests, "post", side_effect=replies) as post:
+            result = web.tidy.tidy(MESSY)
+        self.assertEqual(post.call_count, 2)
+        self.assertIn("JSON object only", post.call_args.kwargs["json"]["messages"][1]["content"])
+        self.assertIn("<h2>Section Heading</h2>", result["html"])
+        with patch.object(web.tidy.requests, "post", side_effect=[chat_reply("nope"), chat_reply("still nope")]):
+            with self.assertRaisesRegex(web.tidy.TidyError, "expected format"):
+                web.tidy.tidy(MESSY)
+
     def test_reads_key_from_file(self):
         import tempfile
         with tempfile.NamedTemporaryFile("w", suffix=".key", delete=False) as handle:
