@@ -32,36 +32,81 @@ def load_local_env(path=os.path.join(os.path.dirname(os.path.abspath(__file__)),
 load_local_env()
 
 import reader  # noqa: E402
+import climb  # noqa: E402
 import ai_settings  # noqa: E402
 import settings_page  # noqa: E402
 import tidy  # noqa: E402
+import library  # noqa: E402
+import library_page  # noqa: E402
+import export  # noqa: E402
+
+import auth  # noqa: E402
+import pwa  # noqa: E402
+
+VERSION = "0.4.0"
 
 app = flask.Flask(__name__)
+# Optional password (LADDER_PASSWORD): a login in front of every page. Off by default.
+auth.init_app(app)
 # The Send to Reader bookmarklet posts a whole page; Werkzeug's default limit
 # for a form field is 500 KB, which many article pages exceed.
 app.config["MAX_FORM_MEMORY_SIZE"] = 25 * 1024 * 1024
 app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
 
 _DEFAULT_STRINGS = {
-    "heading": "Enter Website Link",
-    "label": "Link to the page you want to read:",
-    "submit": "Submit",
+    "heading": "What would you like to read?",
+    "label": "Paste a link to the page:",
+    "submit": "Start climbing",
     "toggle_dark_mode": "Toggle Dark Mode",
-    "status_heading": "Fetching Article",
-    "error_title": "Something went wrong",
-    "retry_button": "Try Another URL",
+    "status_heading": "Climbing up to your page",
+    "error_title": "Oh dear. Couldn't reach that one.",
+    "retry_button": "Try another link",
     "elapsed_template": "{seconds}s elapsed",
     "connection_lost_error": "Connection to server lost. The page may be taking too long to load.",
-    "step_connect": "Connecting to website...",
-    "step_fetch": "Downloading page content...",
-    "step_detect": "Checking for anti-bot challenges...",
-    "step_fallback_freedium": "Trying Freedium (Medium mirror)...",
-    "step_fallback_org": "Trying archive.org snapshot...",
-    "step_fallback_ph": "Trying archive.today / archive.ph snapshot...",
-    "step_process": "Processing article...",
-    "step_cleanup": "Cleaning up & preparing view...",
-    "step_done": "Done!",
-    "invalid_url": "Invalid URL",
+    "step_connect": "Leaning the ladder against the website…",
+    "step_fetch": "Climbing up to fetch the page…",
+    "step_detect": "Checking the page really arrived…",
+    "step_fallback_freedium": "Asking Freedium, the Medium mirror…",
+    "step_fallback_org": "Dusting off the Wayback Machine at archive.org…",
+    "step_fallback_ph": "Checking the archives at archive.today…",
+    "step_process": "Brushing the crumbs off the article…",
+    "step_cleanup": "Setting the table for reading…",
+    "step_done": "9,001 ft! Enjoy the view.",
+    "altitude_label": "Altitude",
+    "feet_template": "{feet} ft",
+    "feet_label": "Feet climbed so far:",
+    "feet_milestones": [
+        [9001, "That's one very tall ladder."],
+        [18002, "Higher than most clouds bother to go."],
+        [29032, "Taller than Mount Everest."],
+        [45005, "Above the airliners. Wave."],
+        [120000, "Higher than a weather balloon."],
+        [328084, "That's space. Bring a napkin."],
+    ],
+    "first_summit": "First summit! 9,001 ft!",
+    "welcome_title": "First time up here?",
+    "welcome_line": (
+        "Paste a link to any article and Grandma climbs up to fetch a clean, "
+        "easy-to-read copy. Or watch her go with a sample."
+    ),
+    "welcome_dismiss": "Hide this welcome",
+    "sample_button": "Try a sample",
+    "taglines": [
+        "Taller than 13 feet. Considerably.",
+        "Bring your own parmesan.",
+        "One rung at a time, dear.",
+        "Recipes taste better at altitude.",
+        "Skip the life story. Get to the recipe.",
+        "Hold my lasagna.",
+        "Now with 8,988 extra feet.",
+        "No elevator. Excellent cardio.",
+        "Grandma doesn't scroll. Grandma climbs.",
+        "Still warm when it reaches you.",
+        "The view from up here is very readable.",
+        "Mind the top rung.",
+    ],
+    "error_stuck_label": "Stuck at",
+    "invalid_url": "That doesn't look like a web link. Check it and try again.",
     "medium_challenge_error": (
         "Medium served an anti-bot challenge and Freedium / archive.org / "
         "archive.today all came back empty. The article may be too new to "
@@ -102,11 +147,96 @@ _DEFAULT_STRINGS = {
     "tidy_show_original": "Show original",
     "tidy_show_tidy": "Show tidied",
     "tidy_failed": "Couldn't tidy this page: {reason}.",
+    "listen_button": "Read aloud",
+    "listen_controls": "Read aloud controls",
+    "listen_play": "Play",
+    "listen_pause": "Pause",
+    "listen_stop": "Stop",
+    "listen_speed": "Speed",
+    "listen_voice": "Voice",
+    "listen_reading": "Reading {current} of {total}",
+    "listen_paused": "Paused",
+    "listen_stopped": "Stopped",
+    "listen_done": "Finished reading",
+    "listen_no_voices": "This browser has no voices to read with.",
+    "export_button": "Export",
+    "export_menu": "Export options",
+    "export_markdown": "Markdown (.md)",
+    "export_epub": "E-book (.epub)",
+    "export_print": "Print or save as PDF",
+    "export_working": "Preparing the download…",
+    "export_done": "Downloaded {filename}.",
+    "export_failed": "Couldn't export this page: {reason}.",
+    "export_label_source": "Source",
+    "export_label_by": "By",
+    "export_label_published": "Published",
+    "export_label_images_note": "Images aren't included in this e-book; each one is a link to the original.",
+    "export_label_contents": "Contents",
+    "export_label_image": "Image",
+    "export_label_video": "Video",
+    "export_label_audio": "Audio",
+    "export_label_embed": "Embedded content",
     "settings_link": "AI settings (optional)",
     "reader_empty": (
         "Couldn't find the article text on this page. "
         "Try the original page instead."
     ),
+    "keep_button": "Keep a copy",
+    "library_link": "Your library",
+    "library_title": "Your library",
+    "library_lede": (
+        "Copies of pages you kept, saved on this computer with their styles, images and fonts, "
+        "so they open later, even without an internet connection."
+    ),
+    "library_empty": (
+        "Nothing here yet. Press \U0001F4CC Keep a copy on a page 9001ft opened, or use the "
+        "bookmarklet below on any page open in your own browser."
+    ),
+    "library_add_label": "Keep a copy of a link",
+    "library_saved": "Saved to your library.",
+    "library_saved_skipped": "Some of its files ({count}) couldn't be saved, so the copy may look a little different.",
+    "library_deleted": "Deleted.",
+    "library_saved_on": "Saved {date}",
+    "library_open": "Open copy",
+    "library_reader": "Reader version",
+    "library_live": "Live page",
+    "library_delete": "Delete",
+    "library_delete_confirm": "Delete your copy of \u201c{title}\u201d? This can't be undone.",
+    "library_delete_yes": "Yes, delete it",
+    "library_skipped": "Files that couldn't be saved: {count}",
+    "library_bookmarklet_heading": "Keep pages from your own browser",
+    "library_bookmarklet_label": "Keep a copy in 9001ft",
+    "library_bookmarklet_hint": (
+        "Drag this button to your bookmarks bar (Ctrl+Shift+B shows the bar, or \u2318+Shift+B on a Mac). "
+        "Then, on any page open in your browser, including ones you're signed in to, click it to keep "
+        "a copy here exactly as you see it."
+    ),
+    "library_bookmarklet_click": "Drag the button to your bookmarks bar rather than clicking it here.",
+    "library_confirm_title": "Keep a copy?",
+    "library_confirm_text": (
+        "9001ft will save this page on this computer with its styles, images, fonts and scripts, "
+        "so you can read it later, even offline. Big pages can take a minute."
+    ),
+    "library_confirm_browser": "This is the page as your browser sent it.",
+    "library_saving": "Saving\u2026 this can take a minute.",
+    "library_cancel": "Cancel",
+    "library_error_expired": "This page has expired. Go back, reload it and try again.",
+    "library_error_draft": "That page is no longer waiting to be kept. Send it again.",
+    "library_error_private": "Pages on your own network can't be kept.",
+    "library_error_failed": "Couldn't keep this page: {reason}.",
+
+    "app_description": "Paste a link and read the page cleanly, or in Reader view.",
+    "logout_link": "Log out",
+    "login_title": "Enter the password to continue.",
+    "login_label": "Password",
+    "login_button": "Log in",
+    "login_wrong": "That password isn't right.",
+    "login_too_many": "Too many wrong passwords. Wait a few minutes and try again.",
+    "share_no_link_title": "No link to read",
+    "share_no_link_text": "What you shared didn't include a web address. Share a page from your browser instead.",
+    "offline_title": "You're offline",
+    "offline_text": "9001ft needs a connection to fetch pages. Try again when you're back online.",
+    "back_home": "Back to 9001ft",
 }
 
 
@@ -166,12 +296,21 @@ html = """
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <title>9001ft Ladder</title>
     <link rel="icon" href="/favicon.ico" type="image/png">
-    <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600&display=swap" rel="stylesheet" async>
+    <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="theme-color" content="#9b4dca">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+    <script src="/static/app.js" defer></script>
+    <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Open+Sans:wght@400;600&display=swap" rel="stylesheet" async>
     <style>
         * { box-sizing: border-box; }
+        [hidden] { display: none !important; }
+        {{ palette_css | safe }}
         body {
-            font-family: 'Open Sans', sans-serif;
-            background-color: #FFF;
+            font-family: 'Open Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background-color: var(--paper);
+            background-image: radial-gradient(var(--dots) 1px, transparent 1.5px);
+            background-size: 9px 9px;
+            color: var(--ink);
             margin: 0;
             padding: 0;
             display: flex;
@@ -188,79 +327,171 @@ html = """
             width: 100%;
             height: auto;
             aspect-ratio: 1983 / 793;
-            border-radius: 14px;
-            margin-bottom: 28px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+            border: 3px solid var(--line);
+            border-radius: 16px;
+            box-shadow: 7px 7px 0 var(--shadow);
         }
 
-        #url-form { max-width: 520px; margin: 0 auto; }
+        .tagline { margin: -17px 0 26px; text-align: center; position: relative; }
+        .tagline span {
+            display: inline-block;
+            max-width: 92%;
+            padding: 5px 16px 4px;
+            background: var(--yellow);
+            color: #1d2b30;
+            border: 3px solid var(--line);
+            border-radius: 10px;
+            box-shadow: 3px 3px 0 var(--shadow);
+            transform: rotate(-1.5deg);
+            font-family: var(--display);
+            font-size: 1.3rem;
+            letter-spacing: 0.04em;
+            line-height: 1.2;
+        }
 
-        .bookmarklet { max-width: 520px; margin: 28px auto 0; text-align: center; font-size: 14px; color: #555; }
+        .welcome {
+            position: relative;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px 14px;
+            max-width: 520px;
+            margin: 0 auto 22px;
+            padding: 12px 40px 12px 16px;
+            background: var(--card);
+            border: 3px dashed var(--line);
+            border-radius: 14px;
+            font-size: 15px;
+            line-height: 1.5;
+        }
+        .welcome p { margin: 0; flex: 1 1 250px; }
+        .welcome strong { font-family: var(--display); font-weight: 400; font-size: 1.2rem; letter-spacing: 0.04em; margin-right: 4px; }
+        .welcome-close {
+            position: absolute;
+            top: 4px;
+            right: 6px;
+            width: 30px;
+            height: 30px;
+            padding: 0;
+            background: none;
+            border: 0;
+            border-radius: 50%;
+            color: var(--muted);
+            font-size: 22px;
+            line-height: 1;
+            cursor: pointer;
+        }
+        .welcome-close:hover { color: var(--ink); }
+
+        .btn, input[type="submit"] {
+            display: inline-block;
+            padding: 8px 18px;
+            background: var(--yellow);
+            color: #1d2b30;
+            border: 3px solid var(--line);
+            border-radius: 12px;
+            box-shadow: 4px 4px 0 var(--shadow);
+            font-family: var(--display);
+            font-size: 1.15rem;
+            font-weight: 400;
+            letter-spacing: 0.06em;
+            text-decoration: none;
+            cursor: pointer;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+        .btn:hover, input[type="submit"]:hover { transform: translate(-1px, -1px); box-shadow: 5px 5px 0 var(--shadow); background: #ffd94f; }
+        .btn:active, input[type="submit"]:active { transform: translate(3px, 3px); box-shadow: 1px 1px 0 var(--shadow); }
+        .btn-red { background: #c22f24; color: #fff; }
+        .btn-red:hover { background: #cf3a2e; }
+
+        a:focus-visible, button:focus-visible, input:focus-visible {
+            outline: 3px solid var(--accent);
+            outline-offset: 3px;
+        }
+
+        #url-form {
+            max-width: 520px;
+            margin: 0 auto;
+            padding: 22px 24px 26px;
+            background: var(--card);
+            border: 3px solid var(--line);
+            border-radius: 18px;
+            box-shadow: 7px 7px 0 var(--shadow);
+        }
+
+        .feet { max-width: 520px; margin: 26px auto 0; text-align: center; font-size: 15px; color: var(--muted); }
+        .feet b {
+            font-family: var(--display);
+            font-weight: 400;
+            font-size: 1.35rem;
+            letter-spacing: 0.04em;
+            color: var(--ink);
+            font-variant-numeric: tabular-nums;
+        }
+        .feet #feet-note { display: block; font-size: 14px; }
+
+        .bookmarklet { max-width: 520px; margin: 26px auto 0; text-align: center; font-size: 14px; color: var(--muted); }
         .bookmarklet p { margin: 10px 0 0; line-height: 1.5; }
         .bookmarklet-link {
             display: inline-block;
             padding: 9px 16px;
-            border: 2px dashed #9b4dca;
+            border: 2px dashed var(--accent);
             border-radius: 999px;
-            color: #9b4dca;
+            color: var(--accent);
             font-weight: 600;
             text-decoration: none;
             cursor: grab;
         }
-        body.dark-mode .bookmarklet { color: #bbb; }
+        .bookmarklet-link:hover { background: var(--card); }
         .settings-link { color: inherit; }
-        body.dark-mode .bookmarklet-link { color: #b9a8ff; border-color: #7359f8; }
 
         h1 {
-            font-size: 1.5rem;
-            margin-bottom: 20px;
+            font-family: var(--display);
+            font-weight: 400;
+            font-size: 2rem;
+            letter-spacing: 0.03em;
+            line-height: 1.15;
+            margin: 0 0 14px;
             text-align: center;
-            color: #333;
+            color: var(--ink);
         }
 
         label {
             display: block;
-            margin-bottom: 10px;
-            font-weight: bold;
+            margin-bottom: 8px;
+            font-weight: 600;
         }
 
         input[type=text] {
-            padding: 10px;
-            margin-bottom: 10px;
-            border: 1px solid #ccc;
-            border-radius: 5px;
+            padding: 12px;
+            margin-bottom: 12px;
+            background: var(--field);
+            color: var(--ink);
+            border: 3px solid var(--line);
+            border-radius: 10px;
             width: 100%;
             font-size: 1rem;
+            font-family: inherit;
         }
 
         input[type="submit"] {
-            padding: 16px;
-            background-color: #a327f0;
-            color: #fff;
-            border: none;
-            border-radius: 5px;
+            padding: 12px 16px 10px;
             width: 100%;
-            text-transform: uppercase;
-            font-size: 1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: background-color 0.3s ease;
-        }
-
-        input[type="submit"]:hover {
-            background-color: #821fc0;
+            font-size: 1.5rem;
         }
 
         .reader-option {
             display: flex;
             align-items: center;
             gap: 8px;
-            margin: -4px 0 16px;
+            margin: 0 0 18px;
             font-size: 14px;
+            font-weight: 400;
             cursor: pointer;
         }
 
-        .reader-option input { width: auto; margin: 0; }
+        .reader-option input { width: 17px; height: 17px; margin: 0; accent-color: var(--red); }
 
         .dark-mode-toggle {
             position: absolute;
@@ -298,12 +529,8 @@ html = """
         }
 
         .dark-mode-toggle input:focus-visible + label {
-            outline: 2px solid #a327f0;
+            outline: 3px solid var(--accent);
             outline-offset: 3px;
-        }
-
-        body.dark-mode .dark-mode-toggle input:focus-visible + label {
-            outline-color: #7359f8;
         }
 
         .dark-mode-toggle .thumb {
@@ -367,131 +594,156 @@ html = """
             transform: scale(1) rotate(0deg);
         }
 
-        @media only screen and (max-width: 600px) {
-            form, .status-container { padding: 10px; }
-            h1 { font-size: 1.2rem; }
-        }
+        /* The climb: shown while a page is being fetched */
+        #status-view { width: 100%; }
 
-        body.dark-mode { background-color: #191a21; color: #FFF; }
-        body.dark-mode h1 { color: #FFF; }
-        body.dark-mode input[type=text] { background-color: #555; border: 1px solid #777; color: #FFF; }
-        body.dark-mode input[type="submit"] { background-color: #7359f8; }
-        body.dark-mode input[type="submit"]:hover { background-color: #5c47c6; }
-        body.dark-mode .status-container { background: #23243a; }
-        body.dark-mode .step { color: #aaa; }
-        body.dark-mode .step.active { color: #fff; }
-        body.dark-mode .step.done { color: #7359f8; }
-        body.dark-mode .error-box { background: #3a1c1c; border-color: #ff6b6b; color: #ffaaaa; }
-
-        /* Status page styles */
         .status-container {
-            max-width: 480px;
+            max-width: 760px;
             width: 100%;
-            padding: 30px;
+            margin: 0 auto;
+            padding: 48px 16px 32px;
             text-align: center;
         }
 
-        .status-container h1 { margin-bottom: 30px; }
-
         .url-display {
             font-size: 0.85rem;
-            color: #888;
-            margin-bottom: 24px;
+            color: var(--muted);
+            margin: 0 auto 24px;
+            max-width: 560px;
             word-break: break-all;
         }
 
-        .progress-bar-track {
-            width: 100%;
-            height: 6px;
-            background: #e0e0e0;
-            border-radius: 3px;
-            overflow: hidden;
-            margin-bottom: 28px;
-        }
-
-        body.dark-mode .progress-bar-track { background: #444; }
-
-        .progress-bar-fill {
-            height: 100%;
-            width: 0%;
-            background: linear-gradient(90deg, #a327f0, #7359f8);
-            border-radius: 3px;
-            transition: width 0.5s ease;
-        }
-
-        .steps { text-align: left; margin-bottom: 24px; }
-
-        .step {
-            display: flex;
+        .climb {
+            display: grid;
+            grid-template-columns: minmax(0, 330px) minmax(0, 1fr);
+            gap: 30px;
             align-items: center;
-            gap: 12px;
-            padding: 8px 0;
-            color: #bbb;
-            font-size: 0.95rem;
-            transition: color 0.3s;
-        }
-
-        .step.active { color: #333; font-weight: 600; }
-        .step.done { color: #a327f0; }
-
-        .step-icon {
-            width: 24px;
-            height: 24px;
-            flex-shrink: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .spinner {
-            width: 18px;
-            height: 18px;
-            border: 2px solid #e0e0e0;
-            border-top-color: #a327f0;
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-        }
-
-        body.dark-mode .spinner { border-color: #444; border-top-color: #7359f8; }
-
-        @keyframes spin { to { transform: rotate(360deg); } }
-
-        .checkmark { color: #a327f0; font-weight: bold; font-size: 1.1rem; }
-
-        .elapsed {
-            font-size: 0.85rem;
-            color: #999;
-            margin-top: 4px;
-        }
-
-        .error-box {
-            background: #fff0f0;
-            border: 1px solid #ffcccc;
-            border-radius: 8px;
-            padding: 16px;
-            margin-top: 16px;
-            color: #cc3333;
-            font-size: 0.9rem;
             text-align: left;
         }
 
-        .error-box strong { display: block; margin-bottom: 6px; }
+        {{ scene_css | safe }}
 
-        .retry-btn {
-            display: inline-block;
-            margin-top: 16px;
-            padding: 10px 24px;
-            background: #a327f0;
-            color: #fff;
-            border: none;
-            border-radius: 5px;
-            font-size: 0.95rem;
-            font-weight: 600;
-            cursor: pointer;
-            text-decoration: none;
+        .summit-badge {
+            position: absolute;
+            left: 50%;
+            top: 70%;
+            z-index: 3;
+            width: max-content;
+            max-width: 88%;
+            padding: 10px 18px 8px;
+            background: var(--yellow);
+            color: #ad2a20;
+            border: 3px solid #1d2b30;
+            border-radius: 14px;
+            box-shadow: 5px 5px 0 #1d2b30;
+            transform: translate(-50%, -50%) rotate(-5deg);
+            font-family: var(--display);
+            font-size: 1.7rem;
+            letter-spacing: 0.04em;
+            line-height: 1.1;
+            text-align: center;
         }
 
-        .retry-btn:hover { background: #821fc0; }
+        .now {
+            min-height: 2.4em;
+            margin: 0 0 14px;
+            font-family: var(--display);
+            font-size: 1.6rem;
+            letter-spacing: 0.03em;
+            line-height: 1.2;
+        }
+
+        .steps { list-style: none; margin: 0 0 14px; padding: 0; }
+
+        .step {
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+            padding: 4px 0;
+            color: var(--muted);
+            font-size: 0.92rem;
+            opacity: 0.75;
+        }
+        .step::before {
+            content: "\\25CB";
+            flex: 0 0 18px;
+            text-align: center;
+            font-weight: 700;
+        }
+        .step.active { color: var(--ink); font-weight: 600; opacity: 1; }
+        .step.active::before { content: "\\25B6"; color: var(--accent); }
+        .step.done { opacity: 1; }
+        .step.done::before { content: "\\2713"; color: var(--accent); }
+        .step.skipped { opacity: 0.5; }
+        .step.skipped::before { content: "\\2013"; }
+        .step.failed { color: var(--ink); opacity: 1; }
+        .step.failed::before { content: "\\2717"; color: var(--accent); }
+
+        .elapsed { font-size: 0.85rem; color: var(--muted); }
+
+        .error-box {
+            margin: 0 0 16px;
+            padding: 14px 16px;
+            background: var(--card);
+            border: 3px solid var(--line);
+            border-radius: 14px;
+            box-shadow: 4px 4px 0 var(--shadow);
+            font-size: 0.95rem;
+            line-height: 1.5;
+            overflow-wrap: anywhere;
+        }
+        .error-box h2 {
+            margin: 0 0 6px;
+            font-family: var(--display);
+            font-weight: 400;
+            font-size: 1.5rem;
+            letter-spacing: 0.03em;
+            line-height: 1.15;
+            color: var(--accent);
+        }
+        .error-box p { margin: 0 0 14px; }
+
+        .confetti { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 50; }
+        .confetti i {
+            position: absolute;
+            top: -24px;
+            width: 10px;
+            height: 16px;
+            border: 1.5px solid #1d2b30;
+            opacity: 0;
+        }
+
+        @media (prefers-reduced-motion: no-preference) {
+            .btn, input[type="submit"] { transition: transform 0.12s, box-shadow 0.12s, background-color 0.2s; }
+            .step.active::before { animation: step-pulse 0.9s ease-in-out infinite alternate; }
+            .summit-badge { animation: badge-pop 0.5s cubic-bezier(0.2, 1.6, 0.4, 1) both; }
+            .confetti i { animation: confetti-fall var(--dur, 1.9s) cubic-bezier(0.3, 0.5, 0.7, 1) var(--delay, 0s) forwards; }
+            #form-view > *, .status-container > * { animation: rise-in 0.45s ease-out both; }
+            #form-view > :nth-child(2) { animation-delay: 0.05s; }
+            #form-view > :nth-child(n+3) { animation-delay: 0.1s; }
+        }
+        @keyframes step-pulse { from { translate: -2px 0; } to { translate: 2px 0; } }
+        @keyframes badge-pop {
+            from { opacity: 0; transform: translate(-50%, -50%) rotate(-5deg) scale(0.3); }
+            to { opacity: 1; transform: translate(-50%, -50%) rotate(-5deg) scale(1); }
+        }
+        @keyframes confetti-fall {
+            0% { opacity: 1; transform: translate3d(0, 0, 0) rotate(0deg); }
+            100% { opacity: 1; transform: translate3d(var(--dx, 0px), 110vh, 0) rotate(var(--rot, 540deg)); }
+        }
+        @keyframes rise-in { from { translate: 0 12px; } to { translate: 0 0; } }
+
+        @media only screen and (max-width: 640px) {
+            #form-view { padding-top: 52px; }
+            #url-form { padding: 18px 16px 22px; }
+            h1 { font-size: 1.6rem; }
+            .tagline span { font-size: 1.05rem; }
+            .status-container { padding-top: 52px; }
+            .climb { grid-template-columns: minmax(0, 1fr); gap: 22px; }
+            .scene { max-width: 300px; margin: 0 auto; }
+            .now { font-size: 1.35rem; min-height: 0; text-align: center; }
+            .elapsed { text-align: center; }
+        }
     </style>
 </head>
 
@@ -521,6 +773,12 @@ html = """
     <div id="form-view">
         <img class="banner" src="/banner.webp" width="1983" height="793"
              alt="9001ft Ladder: a grandmother carrying a lasagna climbs a huge ladder over a Subscribe wall. All this for one lasagna recipe.">
+        <p class="tagline"><span id="tagline">{{ taglines[0] }}</span></p>
+        <div class="welcome" id="welcome" hidden>
+            <p><strong>{{ welcome_title }}</strong> {{ welcome_line }}</p>
+            <a class="btn btn-red" id="sample-link" href="/reader/{{ sample_url }}">{{ sample_button }}</a>
+            <button type="button" class="welcome-close" id="welcome-close" aria-label="{{ welcome_dismiss }}" title="{{ welcome_dismiss }}">&times;</button>
+        </div>
         <form id="url-form">
             <h1>{{ heading }}</h1>
             <label for="link">{{ label }}</label>
@@ -530,29 +788,56 @@ html = """
             </label>
             <input type="submit" value="{{ submit }}">
         </form>
+        <p class="feet" id="feet" hidden>
+            <span aria-hidden="true">&#129692;</span> {{ feet_label }} <b id="feet-total"></b>
+            <span id="feet-note"></span>
+        </p>
         <div class="bookmarklet">
             <a class="bookmarklet-link" href="{{ reader_bookmarklet }}" onclick="return false;"><span aria-hidden="true">&#128214;</span>&nbsp; {{ bookmarklet_label }}</a>
             <p>{{ bookmarklet_hint }}</p>
+            <p><a class="settings-link" href="/library">&#128218; {{ library_link }}</a></p>
             <p><a class="settings-link" href="/settings">&#9881;&#65039; {{ settings_link }}</a></p>
+            {% if show_logout %}<p><a class="settings-link" href="/logout">{{ logout_link }}</a></p>{% endif %}
         </div>
     </div>
 
-    <div id="status-view" style="display:none;">
+    <div id="status-view" hidden>
         <div class="status-container">
             <h1>{{ status_heading }}</h1>
             <div class="url-display" id="status-url"></div>
-            <div class="progress-bar-track">
-                <div class="progress-bar-fill" id="progress-fill"></div>
+            <div class="climb">
+                <div class="scene is-climbing" id="scene">
+                    <div class="altimeter" aria-hidden="true"><small>{{ altitude_label }}</small><b id="altitude"></b></div>
+                    {{ scene_svg | safe }}
+                    <div class="summit-badge" id="summit-badge" hidden>{{ first_summit }}</div>
+                </div>
+                <div class="climb-side">
+                    <p class="now" id="status-now" role="status" aria-live="polite"></p>
+                    <div id="error-area" role="alert"></div>
+                    <ol class="steps" id="steps-list"></ol>
+                    <div class="elapsed" id="elapsed-time"></div>
+                </div>
             </div>
-            <div class="steps" id="steps-list"></div>
-            <div class="elapsed" id="elapsed-time"></div>
-            <div id="error-area"></div>
         </div>
     </div>
 
     <script>
-        const toggleSwitch = document.getElementById('dark-mode-toggle');
-        const currentTheme = localStorage.getItem('theme') || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    (function () {
+        'use strict';
+
+        // Saved choices and the little surprises are kept in the browser. Nothing
+        // here is needed for the page to work, so every access may fail quietly.
+        const store = {
+            get(key) { try { return localStorage.getItem(key); } catch (e) { return null; } },
+            set(key, value) { try { localStorage.setItem(key, value); } catch (e) {} }
+        };
+        const reducedMotion = function () {
+            return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        };
+        const byId = function (id) { return document.getElementById(id); };
+
+        const toggleSwitch = byId('dark-mode-toggle');
+        const currentTheme = store.get('theme') || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
 
         if (currentTheme === "dark") {
             document.body.classList.add("dark-mode");
@@ -560,131 +845,291 @@ html = """
         }
 
         toggleSwitch.addEventListener('change', function () {
-            if (this.checked) {
-                document.body.classList.add("dark-mode");
-                localStorage.setItem('theme', 'dark');
-            } else {
-                document.body.classList.remove("dark-mode");
-                localStorage.setItem('theme', 'light');
-            }
+            document.body.classList.toggle("dark-mode", this.checked);
+            store.set('theme', this.checked ? 'dark' : 'light');
         });
 
-        const readerToggle = document.getElementById('reader-mode');
-        try { readerToggle.checked = localStorage.getItem('readerMode') === '1'; } catch (e) {}
+        const readerToggle = byId('reader-mode');
+        readerToggle.checked = store.get('readerMode') === '1';
         readerToggle.addEventListener('change', function () {
-            try { localStorage.setItem('readerMode', this.checked ? '1' : '0'); } catch (e) {}
+            store.set('readerMode', this.checked ? '1' : '0');
         });
 
         const UI_STRINGS = {{ ui_strings | tojson }};
         const STEPS = {{ steps | tojson }};
+        const CLIMB = {{ climb | tojson }};
 
-        function renderSteps(activeIdx) {
-            const container = document.getElementById('steps-list');
-            container.innerHTML = '';
-            STEPS.forEach((step, i) => {
-                const div = document.createElement('div');
-                div.className = 'step' + (i < activeIdx ? ' done' : i === activeIdx ? ' active' : '');
-                const icon = document.createElement('div');
-                icon.className = 'step-icon';
-                if (i < activeIdx) {
-                    icon.innerHTML = '<span class="checkmark">&#10003;</span>';
-                } else if (i === activeIdx) {
-                    icon.innerHTML = '<div class="spinner"></div>';
-                } else {
-                    icon.innerHTML = '<span style="color:#ddd;">&#9675;</span>';
-                }
-                const text = document.createElement('span');
-                text.textContent = step.label;
-                div.appendChild(icon);
-                div.appendChild(text);
-                container.appendChild(div);
+        function formatFeet(feet) {
+            let number;
+            try { number = Math.round(feet).toLocaleString(document.documentElement.lang || undefined); }
+            catch (e) { number = String(Math.round(feet)); }
+            return UI_STRINGS.feet_template.replace('{feet}', number);
+        }
+
+        // --- Home page: tagline, welcome, feet climbed ---
+
+        (function pickTagline() {
+            const lines = UI_STRINGS.taglines || [];
+            if (lines.length < 2) return;
+            const last = parseInt(store.get('lastTagline'), 10);
+            let pick = Math.floor(Math.random() * lines.length);
+            if (pick === last) pick = (pick + 1) % lines.length;
+            store.set('lastTagline', String(pick));
+            byId('tagline').textContent = lines[pick];
+        })();
+
+        function feetClimbed() {
+            const feet = parseInt(store.get('feetClimbed'), 10);
+            return feet > 0 ? feet : 0;
+        }
+
+        function showFeetClimbed() {
+            const feet = feetClimbed();
+            byId('feet').hidden = feet <= 0;
+            if (feet <= 0) return;
+            byId('feet-total').textContent = formatFeet(feet);
+            let note = '';
+            (UI_STRINGS.feet_milestones || []).forEach(function (milestone) {
+                if (feet >= milestone[0]) note = milestone[1];
             });
+            byId('feet-note').textContent = note;
+        }
+        showFeetClimbed();
+
+        const welcome = byId('welcome');
+        function dismissWelcome() {
+            welcome.hidden = true;
+            store.set('welcomed', '1');
+        }
+        if (store.get('welcomed') !== '1' && feetClimbed() === 0) welcome.hidden = false;
+        byId('welcome-close').addEventListener('click', function () {
+            dismissWelcome();
+            byId('link').focus();
+        });
+        byId('sample-link').addEventListener('click', function (event) {
+            event.preventDefault();
+            dismissWelcome();
+            startClimb(CLIMB.sample_url, true);
+        });
+
+        // Dragging the bookmarklet to the bookmarks bar installs it; clicking it here does nothing.
+        document.querySelector('.bookmarklet-link').addEventListener('click', function (event) {
+            event.preventDefault();
+        });
+
+        // --- The climb ---
+
+        const scene = byId('scene');
+        const climber = scene.querySelector('.climber');
+        const altitudeEl = byId('altitude');
+        const nowEl = byId('status-now');
+        const stepsEl = byId('steps-list');
+        const errorArea = byId('error-area');
+        const elapsedEl = byId('elapsed-time');
+        const badge = byId('summit-badge');
+        const stepItems = STEPS.map(function (step) {
+            const item = document.createElement('li');
+            item.className = 'step';
+            item.textContent = step.label;
+            stepsEl.appendChild(item);
+            return item;
+        });
+
+        let altitude = 0;
+        let frame = null;
+        let source = null;
+        let timer = null;
+        let leaving = null;
+        let visited = [];
+
+        function place(feet) {
+            altitude = feet;
+            const t = CLIMB.from + (CLIMB.to - CLIMB.from) * Math.max(0, Math.min(1, feet / CLIMB.summit));
+            const x = CLIMB.foot[0] + CLIMB.rise[0] * t - CLIMB.hand[0];
+            const y = CLIMB.foot[1] + CLIMB.rise[1] * t - CLIMB.hand[1];
+            climber.setAttribute('transform', 'translate(' + x.toFixed(1) + ' ' + y.toFixed(1) + ')');
+            altitudeEl.textContent = formatFeet(feet);
+        }
+
+        // Ease the climber and the altitude counter up to `target` feet.
+        function climbTo(target, duration) {
+            if (frame) cancelAnimationFrame(frame);
+            frame = null;
+            if (reducedMotion() || !duration) { place(target); return; }
+            const from = altitude;
+            const start = performance.now();
+            const tick = function (now) {
+                const progress = Math.min((now - start) / duration, 1);
+                place(from + (target - from) * (1 - Math.pow(1 - progress, 3)));
+                frame = progress < 1 ? requestAnimationFrame(tick) : null;
+            };
+            frame = requestAnimationFrame(tick);
+        }
+
+        function markSteps(activeIdx, failed) {
+            stepItems.forEach(function (item, i) {
+                let state = '';
+                if (i === activeIdx) state = failed ? ' failed' : ' active';
+                else if (i < activeIdx) state = visited.indexOf(i) >= 0 ? ' done' : ' skipped';
+                item.className = 'step' + state;
+                if (i === activeIdx && !failed) item.setAttribute('aria-current', 'step');
+                else item.removeAttribute('aria-current');
+            });
+        }
+
+        function stopListening() {
+            if (source) source.close();
+            source = null;
+            clearInterval(timer);
+            timer = null;
+        }
+
+        function showForm() {
+            stopListening();
+            clearTimeout(leaving);
+            if (frame) cancelAnimationFrame(frame);
+            frame = null;
+            document.querySelectorAll('.confetti').forEach(function (layer) { layer.remove(); });
+            byId('status-view').hidden = true;
+            byId('form-view').hidden = false;
+            showFeetClimbed();
         }
 
         function showStatus(url) {
-            document.getElementById('form-view').style.display = 'none';
-            document.getElementById('status-view').style.display = 'flex';
-            document.getElementById('status-url').textContent = url;
-            document.getElementById('error-area').innerHTML = '';
-            renderSteps(0);
-            document.getElementById('progress-fill').style.width = '0%';
+            byId('form-view').hidden = true;
+            byId('status-view').hidden = false;
+            byId('status-url').textContent = url;
+            errorArea.textContent = '';
+            badge.hidden = true;
+            nowEl.hidden = false;
+            nowEl.textContent = STEPS[0].label;
+            elapsedEl.textContent = '';
+            scene.className = 'scene is-climbing';
+            visited = [];
+            markSteps(0, false);
+            place(0);
+            window.scrollTo(0, 0);
         }
 
         function showError(message) {
-            const area = document.getElementById('error-area');
-            area.innerHTML = '';
+            stopListening();
+            if (frame) cancelAnimationFrame(frame);
+            frame = null;
+            scene.className = 'scene is-error';
+            markSteps(visited.length ? visited[visited.length - 1] : 0, true);
+            nowEl.hidden = true;
+            errorArea.textContent = '';
             const box = document.createElement('div');
             box.className = 'error-box';
-            const strong = document.createElement('strong');
-            strong.textContent = UI_STRINGS.error_title;
-            box.appendChild(strong);
-            box.appendChild(document.createTextNode(message));
-            area.appendChild(box);
-            const retry = document.createElement('a');
-            retry.href = '/';
-            retry.className = 'retry-btn';
+            const title = document.createElement('h2');
+            title.textContent = UI_STRINGS.error_title;
+            const text = document.createElement('p');
+            text.textContent = message;
+            const retry = document.createElement('button');
+            retry.type = 'button';
+            retry.className = 'btn';
             retry.textContent = UI_STRINGS.retry_button;
-            area.appendChild(retry);
+            retry.addEventListener('click', function () {
+                showForm();
+                const link = byId('link');
+                link.focus();
+                link.select();
+            });
+            box.appendChild(title);
+            box.appendChild(text);
+            box.appendChild(retry);
+            errorArea.appendChild(box);
+            retry.focus();
         }
 
-        document.getElementById('url-form').addEventListener('submit', function(e) {
-            e.preventDefault();
-            const link = document.getElementById('link').value.trim();
-            if (!link) return;
+        function throwConfetti() {
+            const colors = ['#ffcf33', '#d1382c', '#ee7b22', '#fff8e7', '#4f9a4c', '#1f6f73'];
+            const layer = document.createElement('div');
+            layer.className = 'confetti';
+            layer.setAttribute('aria-hidden', 'true');
+            for (let i = 0; i < 44; i++) {
+                const piece = document.createElement('i');
+                piece.style.left = (Math.random() * 100).toFixed(1) + '%';
+                piece.style.background = colors[i % colors.length];
+                if (i % 3 === 0) piece.style.borderRadius = '50%';
+                piece.style.setProperty('--dx', (Math.random() * 160 - 80).toFixed(0) + 'px');
+                piece.style.setProperty('--rot', (Math.random() * 900 - 450).toFixed(0) + 'deg');
+                piece.style.setProperty('--delay', (Math.random() * 0.5).toFixed(2) + 's');
+                piece.style.setProperty('--dur', (1.5 + Math.random() * 0.9).toFixed(2) + 's');
+                layer.appendChild(piece);
+            }
+            document.body.appendChild(layer);
+        }
+
+        // The page is ready: finish the climb, celebrate a first summit, then open it.
+        function reachSummit(target) {
+            stopListening();
+            visited.push(STEPS.length - 1);
+            markSteps(STEPS.length, false);
+            nowEl.textContent = STEPS[STEPS.length - 1].label;
+            scene.className = 'scene is-done';
+            climbTo(CLIMB.summit, 800);
+
+            store.set('feetClimbed', String(feetClimbed() + CLIMB.summit));
+            store.set('welcomed', '1');
+            let pause = reducedMotion() ? 500 : 1000;
+            if (store.get('firstSummit') !== '1') {
+                store.set('firstSummit', '1');
+                badge.hidden = false;
+                if (!reducedMotion()) throwConfetti();
+                pause = 2400;
+            }
+            leaving = setTimeout(function () { window.location.href = target; }, pause);
+        }
+
+        function startClimb(link, forceReader) {
             showStatus(link);
-
             const startTime = Date.now();
-            const elapsedEl = document.getElementById('elapsed-time');
-            const progressEl = document.getElementById('progress-fill');
-
-            const timer = setInterval(() => {
-                const sec = ((Date.now() - startTime) / 1000).toFixed(0);
-                elapsedEl.textContent = UI_STRINGS.elapsed_template.replace('{seconds}', sec);
+            timer = setInterval(function () {
+                const seconds = ((Date.now() - startTime) / 1000).toFixed(0);
+                elapsedEl.textContent = UI_STRINGS.elapsed_template.replace('{seconds}', seconds);
             }, 500);
 
-            const evtSource = new EventSource('/status?url=' + encodeURIComponent(link));
+            source = new EventSource('/status?url=' + encodeURIComponent(link));
 
-            evtSource.addEventListener('step', function(e) {
+            source.addEventListener('step', function (e) {
                 const data = JSON.parse(e.data);
-                const idx = STEPS.findIndex(s => s.id === data.step);
-                if (idx >= 0) {
-                    renderSteps(idx);
-                    const pct = Math.min(((idx + 1) / STEPS.length) * 100, 95);
-                    progressEl.style.width = pct + '%';
-                }
                 if (data.redirect) {
-                    evtSource.close();
-                    clearInterval(timer);
-                    renderSteps(STEPS.length);
-                    progressEl.style.width = '100%';
-                    const target = readerToggle.checked ? '/reader' + data.redirect : data.redirect;
-                    setTimeout(() => {
-                        window.location.href = target;
-                    }, 400);
+                    const openReader = forceReader || readerToggle.checked;
+                    reachSummit(openReader ? '/reader' + data.redirect : data.redirect);
+                    return;
                 }
+                const idx = STEPS.findIndex(function (s) { return s.id === data.step; });
+                if (idx < 0) return;
+                visited.push(idx);
+                markSteps(idx, false);
+                nowEl.textContent = STEPS[idx].label;
+                // The last stretch is saved for the moment the page is ready.
+                climbTo(CLIMB.summit * 0.94 * (idx + 1) / STEPS.length, 900);
             });
 
-            evtSource.addEventListener('error_msg', function(e) {
-                evtSource.close();
-                clearInterval(timer);
-                const data = JSON.parse(e.data);
-                showError(data.message);
+            source.addEventListener('error_msg', function (e) {
+                showError(JSON.parse(e.data).message);
             });
 
-            evtSource.onerror = function() {
-                evtSource.close();
-                clearInterval(timer);
+            source.onerror = function () {
                 showError(UI_STRINGS.connection_lost_error);
             };
+        }
+
+        byId('url-form').addEventListener('submit', function (e) {
+            e.preventDefault();
+            const link = byId('link').value.trim();
+            if (link) startClimb(link, false);
         });
 
-        window.addEventListener('pageshow', function(event) {
+        window.addEventListener('pageshow', function (event) {
             if (event.persisted) {
-                document.getElementById('form-view').style.display = '';
-                document.getElementById('status-view').style.display = 'none';
-                document.getElementById('link').value = '';
+                showForm();
+                byId('link').value = '';
             }
         });
+    })();
     </script>
 </body>
 
@@ -722,25 +1167,68 @@ READER_BOOKMARKLET = (
 )
 
 
-def reader_bookmarklet(host_url):
-    return READER_BOOKMARKLET.replace("{action}", host_url.rstrip("/") + "/reader")
+def reader_bookmarklet(host_url, token=None):
+    script = READER_BOOKMARKLET.replace("{action}", host_url.rstrip("/") + "/reader")
+    if token:
+        # With a password set, the bookmarklet proves it came from this home
+        # page (its post comes from another site, without the login cookie).
+        script = script.replace("['url',location.href]]", "['url',location.href],['token','" + token + "']]")
+    return script
+
+
+# "Try a sample" on the home page opens this article in Reader view.
+SAMPLE_URL = "https://en.wikipedia.org/wiki/Ladder"
 
 
 def render_main_page():
     strings = load_strings()
-    ui_strings = {
-        "error_title": strings["error_title"],
-        "retry_button": strings["retry_button"],
-        "elapsed_template": strings["elapsed_template"],
-        "connection_lost_error": strings["connection_lost_error"],
+    ui_strings = {key: strings[key] for key in (
+        "error_title", "retry_button", "elapsed_template", "connection_lost_error",
+        "feet_template", "feet_milestones", "taglines",
+    )}
+    climb_settings = {
+        "foot": climb.LADDER_FOOT,
+        "rise": climb.LADDER_RISE,
+        "hand": [value * climb.CLIMBER_SCALE for value in climb.CLIMBER_HAND],
+        "from": climb.CLIMB_FROM,
+        "to": climb.CLIMB_TO,
+        "summit": climb.SUMMIT_FEET,
+        "sample_url": SAMPLE_URL,
     }
     return flask.render_template_string(
         html,
         steps=build_steps(strings),
         ui_strings=ui_strings,
-        reader_bookmarklet=reader_bookmarklet(request.host_url),
+        climb=climb_settings,
+        sample_url=SAMPLE_URL,
+        palette_css=climb.PALETTE_CSS,
+        scene_css=climb.SCENE_CSS,
+        scene_svg=climb.scene_svg(),
+        reader_bookmarklet=reader_bookmarklet(request.host_url, auth.bookmarklet_token()),
+        show_logout=auth.enabled(),
         **strings,
     )
+
+
+def error_page(message, status, strings):
+    """A small friendly page for when an article can't be shown. It takes the
+    place of a bare line of text, and is locked down like the other pages."""
+    nonce = secrets.token_urlsafe(16)
+    body = flask.render_template_string(
+        climb.ERROR_TEMPLATE,
+        message=message,
+        stuck_at=strings["feet_template"].replace("{feet}", str(status)),
+        nonce=nonce,
+        palette_css=climb.PALETTE_CSS,
+        scene_css=climb.SCENE_CSS,
+        scene_svg=climb.scene_svg(0.45),
+        **strings,
+    )
+    response = Response(body, status=status, mimetype="text/html")
+    response.headers["Content-Security-Policy"] = climb.content_security_policy(nonce)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 # --- archive.org (Wayback Machine) snapshots ---
@@ -1285,6 +1773,110 @@ def main_page():
     return render_main_page()
 
 
+# --- self-hosting: health check, login, installable app, share target ---
+
+def _no_store(response):
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.route("/healthz")
+def healthz():
+    return _no_store(flask.jsonify(ok=True, version=VERSION))
+
+
+def render_login(error=None, status=200):
+    strings = load_strings()
+    nonce = secrets.token_urlsafe(16)
+    body = flask.render_template_string(
+        auth.LOGIN_TEMPLATE, nonce=nonce, error=error,
+        next_path=auth.safe_next(request.args.get("next")), **strings)
+    response = Response(body, status=status, mimetype="text/html")
+    response.headers["Content-Security-Policy"] = pwa.content_security_policy(nonce)
+    return _no_store(response)
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    next_path = auth.safe_next(request.args.get("next"))
+    if not auth.enabled() or (request.method == "GET" and auth.logged_in()):
+        return flask.redirect(next_path, 303)
+    if request.method == "GET":
+        return render_login()
+    origin = request.headers.get("Origin")
+    if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
+        return "not allowed from another site", 403
+    strings = load_strings()
+    address = auth.client_address()
+    if auth.failed_logins.blocked(address):
+        return render_login(strings["login_too_many"], 429)
+    if not auth.password_matches(request.form.get("password", "")):
+        auth.failed_logins.record(address)
+        return render_login(strings["login_wrong"], 401)
+    auth.failed_logins.forget(address)
+    auth.log_in()
+    return flask.redirect(next_path, 303)
+
+
+@app.route("/logout")
+def logout():
+    auth.log_out()
+    return _no_store(flask.redirect("/login" if auth.enabled() else "/", 303))
+
+
+def asset_path(*parts):
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", *parts)
+
+
+@app.route("/manifest.webmanifest")
+def manifest():
+    response = Response(json.dumps(pwa.manifest(load_strings()["app_description"])),
+                        mimetype="application/manifest+json")
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    return response
+
+
+@app.route("/icons/<name>")
+def app_icon(name):
+    if name not in pwa.ICON_FILES:
+        return "", 404
+    return flask.send_from_directory(asset_path("assets", "icons"), name, mimetype="image/png", max_age=86400)
+
+
+@app.route("/sw.js")
+def service_worker():
+    response = flask.send_from_directory(app.static_folder, "sw.js", mimetype="text/javascript", max_age=0)
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["Service-Worker-Allowed"] = "/"
+    return response
+
+
+def render_message(title, text, status=200):
+    strings = load_strings()
+    nonce = secrets.token_urlsafe(16)
+    body = flask.render_template_string(pwa.MESSAGE_TEMPLATE, nonce=nonce, title=title, text=text,
+                                        button=strings["back_home"], lang=strings["lang"])
+    response = Response(body, status=status, mimetype="text/html")
+    response.headers["Content-Security-Policy"] = pwa.content_security_policy(nonce)
+    return response
+
+
+@app.route("/offline")
+def offline_page():
+    strings = load_strings()
+    return render_message(strings["offline_title"], strings["offline_text"])
+
+
+@app.route("/share")
+def share():
+    """Android's share sheet sends links here once the app is installed."""
+    link = pwa.first_web_link(request.args.get("url"), request.args.get("text"))
+    if link:
+        return flask.redirect("/reader/" + quote(link, safe=":/?#[]@!$&'()*+,;=%~"), 303)
+    strings = load_strings()
+    return _no_store(render_message(strings["share_no_link_title"], strings["share_no_link_text"]))
+
+
 @app.route("/status")
 def status_stream():
     raw_url = request.args.get("url", "")
@@ -1332,27 +1924,48 @@ def status_stream():
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 
-# Floating button on article pages. The page carries a <base> tag pointing at
-# the original site, so the link must be absolute to reach this server.
-READER_BUTTON = (
-    '<a id="ladder-reader-btn" href="{href}" style="all:initial;position:fixed;right:16px;bottom:16px;'
-    "z-index:2147483647;background:#1f2937;color:#fff;cursor:pointer;text-decoration:none;"
+# Floating buttons on article pages. The page carries a <base> tag pointing at
+# the original site, so the links must be absolute to reach this server. The
+# page is sandboxed (see FETCHED_PAGE_CSP), so both are plain links to this
+# server's own pages: Reader view, and the "Keep a copy?" confirmation.
+_FLOATING_LINK_STYLE = (
+    "all:initial;color:#fff;cursor:pointer;text-decoration:none;"
     "font:600 14px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:11px 15px;"
-    'border-radius:999px;box-shadow:0 4px 14px rgba(0,0,0,.28)">&#128214; {label}</a>'
+    "border-radius:999px;box-shadow:0 4px 14px rgba(0,0,0,.28);"
+)
+READER_BUTTON = (
+    '<div id="ladder-buttons" style="all:initial;position:fixed;right:16px;bottom:16px;z-index:2147483647;'
+    'display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">'
+    '<a id="ladder-keep-btn" href="{keep_href}" style="' + _FLOATING_LINK_STYLE + 'background:#9b4dca">'
+    '&#128204; {keep_label}</a>'
+    '<a id="ladder-reader-btn" href="{href}" style="' + _FLOATING_LINK_STYLE + 'background:#1f2937">'
+    '&#128214; {label}</a></div>'
 )
 
 
 def finalize_page(page_html, url, strings):
     """Last step before serving a fetched page: point relay links at this
-    server and add the Reader view button. Both need this server's address,
-    which only the request knows, so the cached copy stays without them."""
+    server, add the Reader view button (both need this server's address, which
+    only the request knows, so the cached copy stays without them) and sandbox
+    the page (see FETCHED_PAGE_CSP)."""
     page_html = page_html.replace(RELAY_TOKEN, request.host_url + "_relay/")
     href = request.host_url + "reader/" + url
-    button = READER_BUTTON.format(href=html_lib.escape(href, quote=True), label=html_lib.escape(strings["reader_button"]))
+    keep_href = request.host_url + "library/save?url=" + quote(url, safe="")
+    button = READER_BUTTON.format(
+        href=html_lib.escape(href, quote=True), label=html_lib.escape(strings["reader_button"]),
+        keep_href=html_lib.escape(keep_href, quote=True), keep_label=html_lib.escape(strings["keep_button"]))
     end = page_html.lower().rfind("</body>")
-    if end == -1:
-        return page_html + button
-    return page_html[:end] + button + page_html[end:]
+    page_html = page_html + button if end == -1 else page_html[:end] + button + page_html[end:]
+    response = Response(page_html, mimetype="text/html")
+    response.headers["Content-Security-Policy"] = FETCHED_PAGE_CSP
+    return response
+
+
+# Fetched pages keep the original site's scripts (for animations and
+# graphics). Sandboxing without allow-same-origin runs them in an opaque
+# origin, so they can't read or call anything on this server, such as the AI
+# settings and their API keys. Links, pop-ups and forms still work.
+FETCHED_PAGE_CSP = "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms"
 
 
 def relay_target_url(full_url):
@@ -1408,6 +2021,237 @@ def relay(path):
     return response
 
 
+# --- Library: keep copies of pages to read later, offline (see library.py) ---
+#
+# Saving and deleting change things, so they need a POST from one of this
+# server's own pages: the form carries a token that the page also set in a
+# SameSite=Strict cookie, which other sites can't send, and the Origin must be
+# this server. Pages from other sites (the bookmarklet, the sandboxed article
+# pages) only ever reach the "Keep a copy?" confirmation. Kept copies are
+# served with FETCHED_PAGE_CSP, so their scripts run sandboxed too.
+
+LIBRARY_CSRF_COOKIE = "ladder_library_csrf"
+LIBRARY_CSRF_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+
+# Like the Send to Reader bookmarklet, but keeps the whole page: styles,
+# scripts and links. Styles that scripts added straight into the browser
+# (empty <style> tags) are written out so they come along too.
+KEEP_BOOKMARKLET = (
+    "javascript:(function(){"
+    "var d=document.documentElement.cloneNode(true),s=document.querySelectorAll('style'),c=d.querySelectorAll('style');"
+    "for(var i=0;i<s.length&&i<c.length;i++){if(!c[i].textContent.trim()){try{"
+    "c[i].textContent=Array.prototype.map.call(s[i].sheet.cssRules,function(r){return r.cssText;}).join(' ');"
+    "}catch(e){}}}"
+    "var t=document.doctype?'<!DOCTYPE '+document.doctype.name+'>':'';"
+    "var f=document.createElement('form');"
+    "f.method='post';f.action='{action}';f.target='_blank';"
+    "f.enctype='multipart/form-data';f.acceptCharset='UTF-8';f.style.display='none';"
+    "[['html',t+d.outerHTML],['url',location.href]].forEach(function(p){"
+    "var e=document.createElement('textarea');e.name=p[0];e.value=p[1];f.appendChild(e);});"
+    "document.body.appendChild(f);f.submit();f.remove();"
+    "})();"
+)
+
+
+def keep_bookmarklet(host_url, token=None):
+    script = KEEP_BOOKMARKLET.replace("{action}", host_url.rstrip("/") + "/library/keep")
+    if token:
+        # Same as the Send to Reader bookmarklet: proves it came from this app.
+        script = script.replace("['url',location.href]]", "['url',location.href],['token','" + token + "']]")
+    return script
+
+
+def keep_copy_href(page_html, url, original_href):
+    """Where Reader view's Keep a copy button goes: the confirmation for a page
+    this server fetched, or for the page the person's own browser sent, which
+    waits as a draft until they confirm."""
+    if original_href:
+        return "/library/save?url=" + quote(url, safe="")
+    try:
+        return "/library/save?draft=" + library.save_draft(page_html, url)
+    except OSError:
+        return None
+
+
+def normalize_keep_url(raw):
+    raw = (raw or "").strip()
+    if raw and not re.match(r"^https?://", raw, re.I):
+        raw = "https://" + raw.lstrip("/")
+    return raw if raw and urlparse(raw).hostname else ""
+
+
+def library_post_problem(strings):
+    """Why a request that changes the library is refused, or None."""
+    origin = request.headers.get("Origin")
+    if origin is not None and urlparse(origin).netloc != request.host:
+        return "not allowed from another site"
+    cookie = request.cookies.get(LIBRARY_CSRF_COOKIE, "")
+    if not LIBRARY_CSRF_RE.match(cookie) or not secrets.compare_digest(cookie, request.form.get("csrf", "")):
+        return strings["library_error_expired"]
+    return None
+
+
+def render_library_template(template, strings, status=200, **values):
+    nonce = secrets.token_urlsafe(16)
+    csrf = request.cookies.get(LIBRARY_CSRF_COOKIE, "")
+    if not LIBRARY_CSRF_RE.match(csrf):
+        csrf = secrets.token_urlsafe(32)
+    context = dict(strings)
+    context.update(values, nonce=nonce, csrf=csrf)
+    response = Response(flask.render_template_string(template, **context), status=status, mimetype="text/html")
+    response.headers["Content-Security-Policy"] = library_page.content_security_policy(nonce)
+    response.headers["Cache-Control"] = "no-store"
+    # Not "no-referrer": with it, browsers send "Origin: null" on form posts,
+    # which library_post_problem() rightly refuses.
+    response.headers["Referrer-Policy"] = "same-origin"
+    response.set_cookie(LIBRARY_CSRF_COOKIE, csrf, httponly=True, samesite="Strict", path="/library")
+    return response
+
+
+def render_library(strings, status=200, error=None):
+    items = []
+    for meta in library.items():
+        item = dict(meta)
+        item["date"] = library.human_date(meta.get("saved_at"))
+        item["size_text"] = library.human_size(meta.get("size"))
+        if not re.match(r"^https?://", str(item.get("url", "")), re.I):
+            item["url"] = ""
+        items.append(item)
+    saved = library.get(request.args.get("saved", "")) if not error else None
+    return render_library_template(
+        library_page.LIBRARY_TEMPLATE, strings, status=status, items=items, saved=saved, error=error,
+        deleted=request.args.get("deleted") == "1" and not error, keep_bookmarklet=keep_bookmarklet(request.host_url, auth.bookmarklet_token()))
+
+
+def render_keep_confirmation(strings, status=200, error=None, url="", title="", draft=""):
+    return render_library_template(
+        library_page.CONFIRM_TEMPLATE, strings, status=status, error=error,
+        url=url, title=title, draft=draft, cancel_href="/library")
+
+
+@app.route("/library", methods=["GET"])
+def library_view():
+    return render_library(load_strings())
+
+
+@app.route("/library/save", methods=["GET"])
+def library_confirm():
+    """The "Keep a copy?" page, for a link (?url=) or a page your browser sent (?draft=)."""
+    strings = load_strings()
+    draft = request.args.get("draft", "")
+    if draft:
+        loaded = library.load_draft(draft)
+        if not loaded:
+            return render_keep_confirmation(strings, 404, strings["library_error_draft"])
+        return render_keep_confirmation(strings, url=loaded[1], title=library.page_title(loaded[0]), draft=draft)
+    url = normalize_keep_url(request.args.get("url"))
+    if not url:
+        return render_keep_confirmation(strings, 400, strings["invalid_url"])
+    with page_cache_lock:
+        cached = page_cache.get(normalize_cache_url(url))
+    return render_keep_confirmation(strings, url=url, title=library.page_title(cached["html"]) if cached else "")
+
+
+@app.route("/library/save", methods=["POST"])
+def library_save():
+    strings = load_strings()
+    draft = request.form.get("draft", "")
+    url = normalize_keep_url(request.form.get("url"))
+    loaded = library.load_draft(draft) if draft else None
+
+    def failed(status, message):
+        if loaded:
+            return render_keep_confirmation(strings, status, message, loaded[1], library.page_title(loaded[0]), draft)
+        return render_keep_confirmation(strings, status, message, "" if draft else url)
+
+    problem = library_post_problem(strings)
+    if problem:
+        return failed(403, problem)
+    if draft and not loaded:
+        return failed(404, strings["library_error_draft"])
+    if not loaded and not url:
+        return failed(400, strings["invalid_url"])
+    try:
+        if loaded:
+            meta = library.save(loaded[0], loaded[1], "browser")
+            library.drop_draft(draft)
+        else:
+            library.check_address(url)
+            page_html = get_page(url, strings).replace(RELAY_TOKEN, "")
+            meta = library.save(page_html, url, "9001ft")
+    except library.BlockedAddress:
+        return failed(400, strings["library_error_private"])
+    except library.FetchError as error:
+        return failed(502, strings["library_error_failed"].replace("{reason}", str(error)))
+    except requests.exceptions.Timeout:
+        return failed(502, strings["timeout_error"])
+    except requests.exceptions.ConnectionError:
+        return failed(502, strings["connection_error"])
+    except requests.exceptions.RequestException:
+        return failed(502, strings["request_error"])
+    except UserFacingError as error:
+        return failed(502, error.user_message)
+    except Exception:
+        return failed(500, strings["unexpected_error"])
+    return flask.redirect("/library?saved=" + meta["id"], code=303)
+
+
+@app.route("/library/keep", methods=["POST"])
+def library_keep_from_browser():
+    """Receives the Keep a copy bookmarklet's post from another site. It only
+    holds the page as a draft and asks; nothing is kept until you confirm."""
+    strings = load_strings()
+    page_html = request.form.get("html", "")
+    url = request.form.get("url", "").strip()
+    if not page_html or not re.match(r"^https?://", url, re.I):
+        return strings["invalid_url"], 400
+    draft = library.save_draft(page_html, url)
+    return render_keep_confirmation(strings, url=url, title=library.page_title(page_html), draft=draft)
+
+
+@app.route("/library/<item_id>/delete", methods=["POST"])
+def library_delete(item_id):
+    strings = load_strings()
+    problem = library_post_problem(strings)
+    if problem:
+        return render_library(strings, 403, problem)
+    if not library.delete(item_id):
+        return "", 404
+    return flask.redirect("/library?deleted=1", code=303)
+
+
+@app.route("/library/<item_id>/reader", methods=["GET"])
+def library_reader(item_id):
+    """The Reader version saved with a copy; works offline."""
+    meta = library.get(item_id)
+    saved = library.reader_article(item_id)
+    if not meta or saved is None:
+        return "", 404
+    article = {key: saved.get(key) or "" for key in ("title", "site", "author", "published", "lead_image", "content")}
+    article["minutes"] = saved.get("minutes") or 0
+    return render_reader("", meta.get("url", ""), "/library/" + item_id + "/", load_strings(), article=article)
+
+
+@app.route("/library/<item_id>/", defaults={"name": "index.html"}, methods=["GET"])
+@app.route("/library/<item_id>/<path:name>", methods=["GET"])
+def library_file(item_id, name):
+    """A kept copy and its files, sandboxed like fetched pages: its scripts
+    can't reach this server's settings or other copies."""
+    found = library.item_file(item_id, name)
+    if not found:
+        return "", 404
+    path, content_type = found
+    response = flask.send_file(path, mimetype=content_type, max_age=0)
+    response.headers["Content-Security-Policy"] = FETCHED_PAGE_CSP
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    if name != "index.html":
+        # The sandboxed page has an opaque origin, so its fonts (and module
+        # scripts) are cross-origin requests that need this header.
+        response.headers["Access-Control-Allow-Origin"] = "*"
+    return response
+
+
 def get_page(url, strings):
     """Fetch a page, reusing the short-lived page cache."""
     key = normalize_cache_url(url)
@@ -1437,19 +2281,19 @@ def reader_view(path):
     strings = load_strings()
     url = reader_target_url(request.url)
     if not url:
-        return strings["invalid_url"], 400
+        return error_page(strings["invalid_url"], 400, strings)
     try:
         page_html = get_page(url, strings)
     except requests.exceptions.Timeout:
-        return strings["timeout_error"], 400
+        return error_page(strings["timeout_error"], 400, strings)
     except requests.exceptions.ConnectionError:
-        return strings["connection_error"], 400
+        return error_page(strings["connection_error"], 400, strings)
     except requests.exceptions.RequestException:
-        return strings["request_error"], 400
+        return error_page(strings["request_error"], 400, strings)
     except UserFacingError as error:
-        return error.user_message, 400
+        return error_page(error.user_message, 400, strings)
     except Exception:
-        return strings["unexpected_error"], 500
+        return error_page(strings["unexpected_error"], 500, strings)
 
     return render_reader(page_html, url, "/" + url, strings)
 
@@ -1462,31 +2306,50 @@ def reader_from_browser():
     page_html = request.form.get("html", "")
     url = request.form.get("url", "").strip()
     if not page_html or not re.match(r"^https?://", url, re.I):
-        return strings["invalid_url"], 400
+        return error_page(strings["invalid_url"], 400, strings)
     return render_reader(page_html, url, None, strings)
 
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
-def local_request_problem(json_only=False):
-    """Why this request may not use the settings or the AI, or None if it may.
-
-    These endpoints use your API keys, so they only answer:
-    - requests addressed to localhost (or a host in LADDER_ALLOWED_HOSTS), so a
-      website can't reach them by pointing its own domain at your computer;
-    - from this server's own pages (the Origin check);
-    - with a JSON body when they change something, which a page on another
-      site can't send without a CORS preflight this server never approves."""
+def host_problem():
+    """Refuse requests not addressed to localhost (or a host listed in
+    LADDER_ALLOWED_HOSTS). Stops a website from reaching this server by
+    pointing its own domain at your computer (DNS rebinding)."""
     host = (urlparse("//" + (request.host or "")).hostname or "").lower()
     allowed = LOCAL_HOSTS | {h.strip().lower() for h in os.environ.get("LADDER_ALLOWED_HOSTS", "").split(",") if h.strip()}
     if host not in allowed and not host.endswith(".localhost"):
-        return "AI settings only work at localhost (see LADDER_ALLOWED_HOSTS in the README)"
+        return "this only works at localhost (see LADDER_ALLOWED_HOSTS in the README)"
+    return None
+
+
+def same_site_problem(json_only=False):
+    """Refuse requests from other sites: the Origin must be this server (a
+    sandboxed page's "null" counts as another site), and with json_only the
+    body must be JSON, which another site can't send without a CORS preflight
+    this server never approves."""
     origin = request.headers.get("Origin")
     if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
         return "not allowed from another site"
     if json_only and not request.is_json:
         return "not allowed"
+    return None
+
+
+def local_request_problem(json_only=False):
+    """Why this request may not use the settings or the AI, or None if it may.
+    These endpoints use your API keys, so they need both checks above."""
+    return host_problem() or same_site_problem(json_only)
+
+
+@app.before_request
+def library_host_check():
+    """Your library is private: same localhost rule as the settings."""
+    if (request.endpoint or "").startswith("library_"):
+        problem = host_problem()
+        if problem:
+            return problem, 403
     return None
 
 
@@ -1498,7 +2361,8 @@ def settings_view():
     nonce = secrets.token_urlsafe(16)
     providers = {key: {k: v for k, v in spec.items() if k in ("label", "key_hint", "models")}
                  for key, spec in ai_settings.PROVIDERS.items()}
-    body = flask.render_template_string(settings_page.SETTINGS_TEMPLATE, nonce=nonce, providers=providers)
+    body = flask.render_template_string(settings_page.SETTINGS_TEMPLATE, nonce=nonce, providers=providers,
+                                        show_logout=auth.enabled())
     response = Response(body, mimetype="text/html")
     response.headers["Content-Security-Policy"] = settings_page.content_security_policy(nonce)
     response.headers["Cache-Control"] = "no-store"
@@ -1568,9 +2432,38 @@ def reader_tidy():
     return flask.jsonify(result)
 
 
-def render_reader(page_html, url, original_href, strings):
+EXPORT_MAX_HTML = 10 * 1024 * 1024
+
+
+@app.route("/reader/export", methods=["POST"])
+def reader_export():
+    """Markdown or EPUB download of the article the Reader page is showing
+    (tidied, if AI tidy was applied). See export.py. It uses no keys, so it
+    only needs to come from this server's own pages."""
+    problem = same_site_problem(json_only=True)
+    if problem:
+        return flask.jsonify(error=problem), 403
     try:
-        article = reader.extract_article(page_html, url)
+        fmt, meta, html = export.read_request(request.get_json(silent=True))
+    except ValueError as error:
+        return flask.jsonify(error=str(error)), 400
+    if len(html) > EXPORT_MAX_HTML:
+        return flask.jsonify(error="article too large to export"), 413
+    strings = load_strings()
+    labels = {key[len("export_label_"):]: value for key, value in strings.items() if key.startswith("export_label_")}
+    fragment = reader.clean_fragment(html, meta["url"] or request.host_url)
+    payload, mimetype, filename = export.build(fmt, meta, fragment, labels)
+    response = Response(payload, mimetype=mimetype)
+    response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+def render_reader(page_html, url, original_href, strings, article=None):
+    kept = article is not None  # the Reader version of a library copy
+    try:
+        article = article if kept else reader.extract_article(page_html, url)
     except Exception:
         article = {"title": url, "site": "", "author": "", "published": "",
                    "minutes": 0, "lead_image": "", "content": ""}
@@ -1583,6 +2476,7 @@ def render_reader(page_html, url, original_href, strings):
         original_href=original_href,
         nonce=nonce,
         tidy_enabled=tidy.enabled(),
+        keep_href=None if kept else keep_copy_href(page_html, url, original_href),
         tidy_strings={key[len("tidy_"):]: value for key, value in strings.items() if key.startswith("tidy_")},
         **strings,
     )
@@ -1598,15 +2492,15 @@ def show_article():
     try:
         return finalize_page(bypass_paywall(link, strings), link, strings)
     except requests.exceptions.Timeout:
-        return strings["timeout_error"], 400
+        return error_page(strings["timeout_error"], 400, strings)
     except requests.exceptions.ConnectionError:
-        return strings["connection_error"], 400
+        return error_page(strings["connection_error"], 400, strings)
     except requests.exceptions.RequestException:
-        return strings["request_error"], 400
+        return error_page(strings["request_error"], 400, strings)
     except UserFacingError as error:
-        return error.user_message, 400
+        return error_page(error.user_message, 400, strings)
     except Exception:
-        return strings["unexpected_error"], 500
+        return error_page(strings["unexpected_error"], 500, strings)
 
 
 @app.route("/", defaults={"path": ""})
@@ -1626,17 +2520,17 @@ def get_article(path):
         try:
             return finalize_page(bypass_paywall(actual_url, strings), actual_url, strings)
         except requests.exceptions.Timeout:
-            return strings["timeout_error"], 400
+            return error_page(strings["timeout_error"], 400, strings)
         except requests.exceptions.ConnectionError:
-            return strings["connection_error"], 400
+            return error_page(strings["connection_error"], 400, strings)
         except requests.exceptions.RequestException:
-            return strings["request_error"], 400
+            return error_page(strings["request_error"], 400, strings)
         except UserFacingError as error:
-            return error.user_message, 400
+            return error_page(error.user_message, 400, strings)
         except Exception:
-            return strings["unexpected_error"], 500
+            return error_page(strings["unexpected_error"], 500, strings)
     else:
-        return strings["invalid_url"], 400
+        return error_page(strings["invalid_url"], 400, strings)
 
 
 if __name__ == "__main__":

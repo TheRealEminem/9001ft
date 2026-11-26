@@ -6,9 +6,12 @@ A small reader you run on your own computer. Paste a link and get the page back 
 
 9001ft Ladder is a fork of [wasi-master/13ft](https://github.com/wasi-master/13ft) (MIT). On top of what 13ft does, it adds:
 
-- **Reader view.** Any page becomes a clean article: title, site, author, date, reading time, text and images, with light, dark and sepia themes and adjustable text size. The article's wording is never changed.
+- **Reader view.** Any page becomes a clean article: title, site, author, date, reading time, text and images, with light, dark and sepia themes and adjustable text size. It can read the article aloud and export it as Markdown, an EPUB e-book or a PDF. The article's wording is never changed.
+- **Runs on a home server.** An optional password, a health check for Docker, and an installable app with a share target on Android.
 - **Send to Reader bookmarklet.** Click it on any page open in your own browser, including articles you subscribe to, and that page opens in Reader view exactly as your browser had it.
+- **Your library.** Press **📌 Keep a copy** to save a page on your computer with its styles, images, fonts and scripts, plus a Reader version, to read later, even offline.
 - **AI tidy (optional).** When an article comes out messy, one click asks an AI model how it should be laid out: headings, lists, paragraphs that were split apart, clutter to leave out. The model never writes text; the page is rebuilt from the original words, and a check confirms nothing was reworded.
+- **A climb instead of a spinner.** While a page loads, Grandma climbs the ladder rung by rung, lasagna in hand, and the altimeter counts up to 9,001 ft. If a page can't be fetched she shrugs and tells you why. The animations switch off when your system asks for reduced motion.
 - **archive.org pages that keep their look.** Pages loaded from the Wayback Machine keep their styles and images instead of arriving as bare text.
 
 | Home | Reader view |
@@ -17,7 +20,7 @@ A small reader you run on your own computer. Paste a link and get the page back 
 
 ## Use it responsibly
 
-9001ft is meant for one person, on their own computer. It listens only on `127.0.0.1` (this machine) by default. Keep it that way.
+9001ft is meant for one person on their own computer, or a household on its own home server. It listens only on `127.0.0.1` (this machine) by default. If you open it up, keep it inside your home network and set a password (see [Run it on a home server](#run-it-on-a-home-server)).
 
 - **Best use:** tidying up pages you can already read. That means your own subscriptions (use the Send to Reader bookmarklet) and free articles buried under clutter.
 - **Don't run it as a public website.** Anyone who can reach it can fetch any page through it, and publishers do go after public tools like this: the host of 12ft.io locked that site in July 2025 after a publisher complaint.
@@ -49,11 +52,41 @@ venv/bin/python -m gunicorn --chdir app -b 127.0.0.1:5013 --threads 4 portable:a
 
 Then open <http://localhost:5013>. Stop it with Ctrl+C.
 
+### Run it on a home server
+
+9001ft runs happily on a NAS, a Raspberry Pi or any small always-on box, so every device at home can use it. The Docker image is based on `python:alpine`, which has builds for arm64 as well as x86-64, so `docker compose up --build -d` works on a Pi 4 or 5 as is.
+
+1. **Set a password.** Put `LADDER_PASSWORD=...` in `.env.local` next to `docker-compose.yaml`. Every page then asks you to log in once per browser (the login lasts 30 days). Without it, anyone on your network can use it.
+2. **Bind it to your LAN on purpose.** The compose file listens on `127.0.0.1` only, so other devices can't reach it. Change the `ports:` line to the server's own LAN address, for example `"192.0.2.10:5013:5000"`, and open `http://192.0.2.10:5013` (or a name such as `http://ladder.lan:5013`) from your other devices.
+3. **Keep it at home.** Don't forward the port on your router. To use it away from home, connect through your own VPN. Running a public instance for strangers isn't what 9001ft is for: anyone who can reach it can fetch any page through it.
+
+More settings, all optional, in `.env.local` or the environment:
+
+| Variable | What it does |
+|---|---|
+| `LADDER_PASSWORD` | Turns on the login. Changing it logs everyone out and retires old bookmarklets. |
+| `LADDER_SECRET_KEY` | Key that signs the login cookie. If unset, one is made on first use and saved as `data/secret_key` (readable only by the app's user). |
+| `LADDER_ALLOWED_HOSTS` | The AI settings page and AI tidy only answer at `localhost`, even after you log in, because they use your API keys. List the names you use at home to allow them there too, for example `ladder.lan,192.0.2.10`. |
+| `LADDER_TRUST_PROXY` | Set to `1` only when 9001ft sits behind your own reverse proxy (for HTTPS). It then trusts the proxy's `X-Forwarded-Proto` and `X-Forwarded-For` headers, so the login cookie is marked Secure and wrong passwords are counted per device. |
+
+Notes:
+
+- With Docker, the `./data` folder holds saved settings and the login key. The app runs as user ID 1000 inside the container, so make sure that user can write to the folder (`mkdir data && sudo chown 1000:1000 data` on Linux). If it can't, 9001ft still works, but logins end whenever the container restarts.
+- After five wrong passwords from one device, the login pauses for 15 minutes.
+- `GET /healthz` answers `{"ok": true, "version": "..."}` without a login, for Docker's health check and uptime monitors.
+- With a password, drag the **Send to 9001ft Reader** button from the home page again after logging in. That copy carries a private token, because the bookmarklet posts from other sites, where your login cookie isn't sent. The README version below has no token and only works without a password.
+
 ## Using it
 
 - **Paste a link** on the home page. Tick **Open in Reader view** to go straight to the clean version.
+- **New here?** The first visit offers **Try a sample**, which fetches a Wikipedia article about ladders and opens it in Reader view.
 - **Put the link after the address:** `http://localhost:5013/https://example.com/some-article` (from [@atcasanova](https://github.com/atcasanova)).
 - **Reader view directly:** `http://localhost:5013/reader/https://example.com/some-article`, or press the 📖 button on any page 9001ft fetched.
+
+### Listening and keeping a copy
+
+- **🔊 Read aloud.** Reads the article with your browser's built-in voices, so nothing goes over the network. Play, pause, stop, a speed from 0.8× to 2×, and a voice picker (it starts with a voice for the article's language). The paragraph being read is highlighted and kept in view. Reading stops when you leave the page. The button only appears in browsers that can speak.
+- **Export.** Download the article as **Markdown** (`.md`, with the title, source link, author and date at the top) or as an **e-book** (`.epub`, opens in Apple Books, Calibre and most e-readers; images become links), or use **Print or save as PDF** for a clean printout without the toolbar. Exports use the article as it's shown, so a tidied article exports tidied. Like AI tidy, the export button answers only at `localhost` (see `LADDER_ALLOWED_HOSTS` below).
 
 ### Bookmarklets
 
@@ -71,7 +104,34 @@ javascript:(function(){var d=document.documentElement.cloneNode(true);d.querySel
 javascript:(function(){window.location.href="http://localhost:5013/"+encodeURIComponent(window.location.href);})();
 ```
 
-A few sites block forms from sending data to other addresses (a `form-action` security policy). On those, Send to Reader does nothing; use the second bookmarklet instead.
+**Keep a copy in 9001ft** sends the whole page your browser is showing, styles and scripts included, to your library (see below). It's on the library page, ready to drag:
+
+```javascript
+javascript:(function(){var d=document.documentElement.cloneNode(true),s=document.querySelectorAll('style'),c=d.querySelectorAll('style');for(var i=0;i<s.length&&i<c.length;i++){if(!c[i].textContent.trim()){try{c[i].textContent=Array.prototype.map.call(s[i].sheet.cssRules,function(r){return r.cssText;}).join(' ');}catch(e){}}}var t=document.doctype?'<!DOCTYPE '+document.doctype.name+'>':'';var f=document.createElement('form');f.method='post';f.action='http://localhost:5013/library/keep';f.target='_blank';f.enctype='multipart/form-data';f.acceptCharset='UTF-8';f.style.display='none';[['html',t+d.outerHTML],['url',location.href]].forEach(function(p){var e=document.createElement('textarea');e.name=p[0];e.value=p[1];f.appendChild(e);});document.body.appendChild(f);f.submit();f.remove();})();
+```
+
+A few sites block forms from sending data to other addresses (a `form-action` security policy). On those, Send to Reader and Keep a copy do nothing; use Open in 9001ft instead.
+
+## Your library
+
+Press **📌 Keep a copy** on any page 9001ft opened (next to the 📖 button), in Reader view, or with the **Keep a copy in 9001ft** bookmarklet on a page in your own browser. A confirmation page shows what will be saved; nothing is kept until you press the button there.
+
+9001ft then saves the page together with everything it uses: stylesheets (and the fonts, images and stylesheets they load), images in every size the page offers, fonts, scripts and video posters, all rewritten to point at the local copies, so the page opens offline looking as it did, animations included where its scripts allow. Videos, frames and links still point at the live site. It also saves the Reader version (title, site, author, date, reading time and text, with the saved images), which works offline too.
+
+Open **📚 Your library** from the home page (`http://localhost:5013/library`). Each copy shows its title, site, the date you kept it and its size, with buttons to open the copy, open the Reader version, open the live page, or delete it (it asks first).
+
+- Copies are saved in `data/library/` (or under `LADDER_DATA_DIR`), readable only by your user. Each is capped at 50 MB, and any one file at 15 MB. Files that fail, are too big or aren't what the page said they were are skipped, and the library lists which ones and why.
+- Pages that used a public copy from archive.org are kept with the archived styles and images.
+- The files a page uses are downloaded by your own server, which only fetches from the public internet: it refuses addresses on your own network (private, loopback and link-local), checks again after every redirect, and checks the address it actually connected to.
+- A kept page still has its own scripts, so it opens sandboxed, just like pages 9001ft fetches: its scripts can't reach your settings or your other copies. Only a 9001ft page can save or delete copies; other sites can at most bring up the confirmation page.
+
+### Install it as an app
+
+9001ft can be installed like an app: in Chrome or Edge use **Install app** in the address bar or menu, on Android **Add to Home screen**, and on iPhone or iPad **Share → Add to Home Screen** in Safari. It opens in its own window, and shows a friendly page when you're offline. It never stores articles or Reader pages on your device.
+
+Browsers only offer this at `localhost` or over HTTPS. On a home server reached as `http://192.0.2.10:5013`, the page still works, but to install it you need HTTPS in front, from your own reverse proxy (set `LADDER_TRUST_PROXY=1` then).
+
+**Sharing links to it.** Once installed on Android, 9001ft appears in the share sheet: share a link from any app and it opens in Reader view. iOS doesn't let web apps receive shares; use the Send to Reader bookmarklet in Safari, or a Shortcut that opens `http://<your server>/reader/` followed by the shared URL.
 
 ## AI tidy (optional)
 
@@ -133,7 +193,7 @@ venv/bin/python -m pip install pytest
 venv/bin/python -m pytest -q
 ```
 
-The tests run offline: Flask's test client stands in for the browser, and every outside request is mocked. They cover the routes, error handling, languages, HTML processing, archive.org rewriting, Reader view extraction and sanitizing, AI tidy plans and their safety checks, the archive.org relay, the bookmarklet endpoint, caching, archive fallbacks and the progress stream. GitHub Actions runs them on every push and pull request (`.github/workflows/test.yml`).
+The tests run offline: Flask's test client stands in for the browser, and every outside request is mocked. They cover the routes, error handling, languages, HTML processing, archive.org rewriting, Reader view extraction and sanitizing, Markdown and EPUB export, AI tidy plans and their safety checks, the archive.org relay, the bookmarklet endpoints, the library (saving, sandboxing, address checks and size limits), the self-hosting parts (password, login cookie, bookmarklet token, health check, manifest, service worker and share target), caching, archive fallbacks and the progress stream. GitHub Actions runs them on every push and pull request (`.github/workflows/test.yml`).
 
 ## Credits
 
