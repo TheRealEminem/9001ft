@@ -1,8 +1,11 @@
 services:
-  13ft:
-    container_name: 13ft
-    hostname: 13ft
-    image: ghcr.io/wasi-master/13ft:latest
+  9001ft:
+    container_name: 9001ft
+    hostname: 9001ft
+    build:
+      context: .
     restart: unless-stopped
     ports:
-      - "5000:5000"
+      # Only this machine can reach it: anyone who can reach it can fetch any
+      # page through it. 5013 because macOS AirPlay Receiver holds port 5000.
+      - "127.0.0.1:5013:5000"
