@@ -8,6 +8,7 @@ A small reader you run on your own computer. Paste a link and get the page back 
 
 - **Reader view.** Any page becomes a clean article: title, site, author, date, reading time, text and images, with light, dark and sepia themes and adjustable text size. The article's wording is never changed.
 - **Send to Reader bookmarklet.** Click it on any page open in your own browser, including articles you subscribe to, and that page opens in Reader view exactly as your browser had it.
+- **AI tidy (optional).** When an article comes out messy, one click asks an AI model how it should be laid out: headings, lists, paragraphs that were split apart, clutter to leave out. The model never writes text; the page is rebuilt from the original words, and a check confirms nothing was reworded.
 - **archive.org pages that keep their look.** Pages loaded from the Wayback Machine keep their styles and images instead of arriving as bare text.
 
 | Home | Reader view |
@@ -72,6 +73,31 @@ javascript:(function(){window.location.href="http://localhost:5013/"+encodeURICo
 
 A few sites block forms from sending data to other addresses (a `form-action` security policy). On those, Send to Reader does nothing; use the second bookmarklet instead.
 
+## AI tidy (optional)
+
+When a page comes out jumbled (archived copies often do), press **✨ Tidy up** in Reader view. The button only appears once a model is set up.
+
+How it stays faithful: the article is split into numbered blocks, and the model answers only with a plan (block 4 is a heading, blocks 7 and 8 are one paragraph, block 12 is an ad). 9001ft rebuilds the page from the original blocks, so the model can't add or change a word. It can leave out short clutter blocks, capped at 60 words each and a quarter of the article. A final check compares the words before and after, and **Show original** switches back at any time.
+
+It works with any OpenAI-compatible chat API: [Ollama](https://ollama.com) on your own computer, a LiteLLM router, OpenAI and others. Create a file called `.env.local` in the top folder (git ignores it):
+
+```sh
+# Required
+TIDY_API_BASE=http://localhost:11434/v1
+TIDY_MODEL=qwen3.5:9b
+# If the service needs a key, either of these
+TIDY_API_KEY=...
+TIDY_API_KEY_FILE=~/path/to/key-file
+# Optional: "none" stops a thinking model thinking, which is much faster
+TIDY_REASONING_EFFORT=none
+# Optional second service, used when the first can't be reached
+TIDY_FALLBACK_API_BASE=...
+TIDY_FALLBACK_MODEL=...
+# (and TIDY_FALLBACK_API_KEY, _API_KEY_FILE, _REASONING_EFFORT)
+```
+
+Restart 9001ft after changing it. The article text is sent to whichever service you configure, so a model on your own computer keeps it private. With Docker, a model on your computer is at `http://host.docker.internal:11434/v1`.
+
 ## How it works
 
 When you paste a link, 9001ft asks the site for the page the way Google's crawler does, since many sites give search engines the full text. Many large sites now check that such requests really come from Google, so when that fails it tries public copies: Freedium for Medium, then the Internet Archive's Wayback Machine, then archive.today. The status page shows each step. (Multi-source fallbacks from [@JRS1986](https://github.com/JRS1986).)
@@ -97,7 +123,7 @@ venv/bin/python -m pip install pytest
 venv/bin/python -m pytest -q
 ```
 
-The tests run offline: Flask's test client stands in for the browser, and every outside request is mocked. They cover the routes, error handling, languages, HTML processing, archive.org rewriting, Reader view extraction and sanitizing, the bookmarklet endpoint, caching, archive fallbacks and the progress stream. GitHub Actions runs them on every push and pull request (`.github/workflows/test.yml`).
+The tests run offline: Flask's test client stands in for the browser, and every outside request is mocked. They cover the routes, error handling, languages, HTML processing, archive.org rewriting, Reader view extraction and sanitizing, AI tidy plans and their safety checks, the archive.org relay, the bookmarklet endpoint, caching, archive fallbacks and the progress stream. GitHub Actions runs them on every push and pull request (`.github/workflows/test.yml`).
 
 ## Credits
 

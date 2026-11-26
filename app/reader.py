@@ -10,7 +10,7 @@ Nothing in the article's own words is changed.
 import json
 import re
 from datetime import datetime
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urldefrag, urljoin, urlparse
 
 from bs4 import BeautifulSoup, Comment
 from readability import Document
@@ -141,12 +141,28 @@ def _promote_lazy_images(soup):
             img.decompose()
 
 
+EDIT_LINK_TEXT = re.compile(r"^\s*\[?\s*edit(\s+source)?\s*\]?\s*$", re.I)
+
+
+def _drop_edit_links(fragment):
+    """Remove wiki-style "[edit]" links next to headings, with their brackets."""
+    for link in fragment.find_all("a", href=True):
+        if link.decomposed or "action=edit" not in link["href"] or not EDIT_LINK_TEXT.match(link.get_text()):
+            continue
+        target = link
+        while target.parent is not None and target.parent.name in ("span", "sup") \
+                and EDIT_LINK_TEXT.match(target.parent.get_text()):
+            target = target.parent
+        target.decompose()
+
+
 def _clean_fragment(fragment_html, base_url):
     fragment = BeautifulSoup(fragment_html, "html.parser")
     for comment in fragment.find_all(string=lambda s: isinstance(s, Comment)):
         comment.extract()
     for tag in fragment.find_all(DROP_TAGS):
         tag.decompose()
+    _drop_edit_links(fragment)
     for tag in fragment.find_all(True):
         allowed = ALLOWED_ATTRS.get(tag.name, set())
         for attr in list(tag.attrs):
@@ -161,6 +177,12 @@ def _clean_fragment(fragment_html, base_url):
         if tag.name == "img":
             tag["loading"] = "lazy"
             tag["decoding"] = "async"
+        if tag.name == "a" and tag.get("href"):
+            # Jump links within the article ("#cite_ref-6") can't work once ids
+            # are stripped, and readability turns them into odd absolute URLs.
+            target, anchor = urldefrag(tag["href"])
+            if anchor and (not target or target == urldefrag(base_url)[0]):
+                del tag["href"]
         if tag.name == "a" and tag.get("href", "").startswith("http"):
             tag["rel"] = "noopener noreferrer"
     for img in fragment.find_all("img"):
@@ -237,9 +259,13 @@ def content_security_policy(nonce):
     # run script on this server's origin even if something slips through.
     return (
         "default-src 'none'; img-src * data: blob:; media-src *; frame-src *; "
-        f"style-src 'unsafe-inline'; script-src 'nonce-{nonce}'; "
+        f"style-src 'unsafe-inline'; script-src 'nonce-{nonce}'; connect-src 'self'; "
         "base-uri 'none'; form-action 'none'"
     )
+
+
+# AI tidy re-sanitizes whatever the page sends back before using it.
+clean_fragment = _clean_fragment
 
 
 READER_TEMPLATE = """<!DOCTYPE html>
@@ -321,6 +347,11 @@ READER_TEMPLATE = """<!DOCTYPE html>
   article td, article th { border: 1px solid var(--rule); padding: 6px 10px; }
   article hr { border: 0; border-top: 1px solid var(--rule); margin: 2em 0; }
   .empty { color: var(--muted); }
+  .bar button:disabled { opacity: 0.6; cursor: progress; }
+  .tidy-note {
+    font: 400 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--muted);
+    background: var(--quote); border-radius: 6px; padding: 10px 14px; margin: -12px 0 28px;
+  }
   @media (max-width: 600px) { :root { --size: 18px; } h1.title { font-size: 1.6em; } main { padding-top: 28px; } }
 </style>
 </head>
@@ -332,6 +363,7 @@ READER_TEMPLATE = """<!DOCTYPE html>
     <a href="{{ source_url }}" rel="noopener noreferrer">{{ reader_source }} &#8599;</a>
     <button type="button" id="smaller" title="{{ reader_smaller }}" aria-label="{{ reader_smaller }}">A&minus;</button>
     <button type="button" id="larger" title="{{ reader_larger }}" aria-label="{{ reader_larger }}">A+</button>
+    {% if tidy_enabled and article.content %}<button type="button" id="tidy">&#10024; {{ tidy_button }}</button>{% endif %}
     <button type="button" id="theme" title="{{ reader_theme }}" aria-label="{{ reader_theme }}">&#9681;</button>
   </div>
 </header>
@@ -343,6 +375,7 @@ READER_TEMPLATE = """<!DOCTYPE html>
     {% if article.published %}<span>{{ article.published }}</span>{% endif %}
     {% if article.content %}<span>{{ reader_minutes.replace('{minutes}', article.minutes|string) }}</span>{% endif %}
   </div>
+  <p class="tidy-note" id="tidy-note" role="status" hidden></p>
   {% if article.lead_image %}<img class="lead" src="{{ article.lead_image }}" alt="">{% endif %}
   {% if article.content %}
   <article>{{ article.content | safe }}</article>
@@ -381,6 +414,50 @@ READER_TEMPLATE = """<!DOCTYPE html>
     root.setAttribute("data-theme", next);
     save("readerTheme", next);
   };
+
+  var tidyButton = document.getElementById("tidy");
+  if (tidyButton) {
+    var TIDY = {{ tidy_strings | tojson }};
+    var article = document.querySelector("article");
+    var note = document.getElementById("tidy-note");
+    var original = null, tidied = null, showingTidy = false;
+    function label(text) { tidyButton.textContent = text; }
+    tidyButton.onclick = function () {
+      if (tidied !== null) {
+        showingTidy = !showingTidy;
+        article.innerHTML = showingTidy ? tidied : original;
+        label(showingTidy ? TIDY.show_original : TIDY.show_tidy);
+        return;
+      }
+      original = article.innerHTML;
+      tidyButton.disabled = true;
+      label(TIDY.working);
+      note.hidden = false;
+      note.textContent = TIDY.working_note;
+      fetch("/reader/tidy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ html: original, url: {{ source_url | tojson }} })
+      }).then(function (response) {
+        return response.json().then(function (data) {
+          if (!response.ok) { throw new Error(data.error || String(response.status)); }
+          return data;
+        });
+      }).then(function (data) {
+        tidied = data.html;
+        showingTidy = true;
+        article.innerHTML = tidied;
+        label(TIDY.show_original);
+        var s = data.stats;
+        note.textContent = TIDY.done.replace("{model}", data.model).replace("{seconds}", data.seconds)
+          .replace("{headings}", s.headings).replace("{joined}", s.joined)
+          .replace("{lists}", s.lists).replace("{dropped}", s.dropped_words);
+      }).catch(function (error) {
+        note.textContent = TIDY.failed.replace("{reason}", error.message);
+        label("\\u2728 " + TIDY.button);
+      }).then(function () { tidyButton.disabled = false; });
+    };
+  }
 })();
 </script>
 </body>

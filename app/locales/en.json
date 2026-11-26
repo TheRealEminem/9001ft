@@ -34,5 +34,12 @@
   "reader_theme": "Change theme",
   "bookmarklet_label": "Send to 9001ft Reader",
   "bookmarklet_hint": "Drag this to your bookmarks bar. On any article you're reading in your own browser, including ones you subscribe to, click it to open that page in Reader view.",
-  "reader_empty": "Couldn't find the article text on this page. Try the original page instead."
+  "reader_empty": "Couldn't find the article text on this page. Try the original page instead.",
+  "tidy_button": "Tidy up",
+  "tidy_working": "Tidying…",
+  "tidy_working_note": "Asking the AI how this page should be laid out. It only arranges what's already here and never rewrites it. This can take a minute.",
+  "tidy_done": "Tidied by {model} in {seconds}s: {headings} headings added, {joined} pieces joined, {lists} lists, {dropped} words of clutter removed. The wording is unchanged.",
+  "tidy_show_original": "Show original",
+  "tidy_show_tidy": "Show tidied",
+  "tidy_failed": "Couldn't tidy this page: {reason}."
 }

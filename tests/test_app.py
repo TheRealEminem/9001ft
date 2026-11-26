@@ -242,6 +242,191 @@ class WaybackRewriteTests(unittest.TestCase):
         self.assertEqual(soup.find("script")["src"], "/static/app.js")
 
 
+MESSY = """<div><p>Intro text here.</p><div>Section Heading</div><p>This paragraph was split</p><p>right in the middle.</p>
+<div>Advertisement</div><ul><li>One</li><li>Two</li></ul>
+<figure><img src="https://x.example/a.jpg" alt="A ladder"><figcaption>Photo: Someone</figcaption></figure>
+Loose <a href="https://x.example/">inline</a> text.</div>"""
+TIDY_ENV = {"TIDY_API_BASE": "http://router.test/v1", "TIDY_MODEL": "main-model"}
+
+
+def no_tidy_env():
+    return {key: value for key, value in os.environ.items() if not key.startswith("TIDY_")}
+
+
+def chat_reply(content, status=200):
+    return Mock(status_code=status, json=Mock(return_value={"choices": [{"message": {"content": content}}]}))
+
+
+class TidyTests(unittest.TestCase):
+    def setUp(self):
+        env = patch.dict(os.environ, {**no_tidy_env(), **TIDY_ENV}, clear=True)
+        env.start()
+        self.addCleanup(env.stop)
+        self.network = patch.object(web.requests.sessions.Session, "request", side_effect=AssertionError("Unexpected network access"))
+        self.network.start()
+        self.addCleanup(self.network.stop)
+        self.blocks = web.tidy.split_blocks(MESSY)
+
+    def test_splits_article_into_ordered_blocks(self):
+        self.assertEqual([(b.tag, b.text) for b in self.blocks], [
+            ("p", "Intro text here."), ("text", "Section Heading"), ("p", "This paragraph was split"),
+            ("p", "right in the middle."), ("text", "Advertisement"), ("li", "One"), ("li", "Two"),
+            ("img", "A ladder"), ("figcaption", "Photo: Someone"), ("text", "Loose inline text."),
+        ])
+        self.assertTrue(self.blocks[7].atomic)
+        self.assertEqual(self.blocks[5].list_type, "ul")
+
+    def test_splits_headings_wrapped_in_paragraphs(self):
+        blocks = web.tidy.split_blocks('<p><h2>Safety</h2><span>[ <a href="https://x.example/edit">edit</a> ]</span></p><p>Body.</p>')
+        self.assertEqual([(b.tag, b.text) for b in blocks], [("h2", "Safety"), ("text", "[ edit ]"), ("p", "Body.")])
+
+    def test_applies_a_valid_plan(self):
+        plan = [{"ids": [2], "as": "h2"}, {"ids": [3, 4], "as": "p"}, {"ids": [5], "as": "drop"}]
+        groups, stats = web.tidy.apply_plan(self.blocks, plan)
+        html, lists = web.tidy.render(groups)
+        self.assertIn("<h2>Section Heading</h2>", html)
+        self.assertIn("<p>This paragraph was split right in the middle.</p>", html)
+        self.assertNotIn("Advertisement", html)
+        self.assertIn("<ul>\n<li>One</li>\n<li>Two</li>\n</ul>", html)
+        self.assertIn('<p class="caption">Photo: Someone</p>', html)
+        self.assertIn('<a href="https://x.example/">inline</a>', html)
+        self.assertEqual((stats["headings"], stats["joined"], stats["dropped_words"], lists), (1, 1, 1, 1))
+
+    def test_ignores_unsafe_or_invalid_plan_entries(self):
+        long_text = " ".join(["word"] * 70)
+        blocks = web.tidy.split_blocks(MESSY.replace("Intro text here.", long_text))
+        plan = [
+            {"ids": [1, 9], "as": "p"},        # not next to each other
+            {"ids": [99], "as": "h2"},         # no such block
+            {"ids": [1], "as": "drop"},        # 70 words: too long to drop
+            {"ids": [7, 8], "as": "p"},        # would merge an image
+            {"ids": [3], "as": "invent"},      # unknown role
+            {"ids": [3, 4], "as": "h2"},       # headings are one block
+            {"ids": [2], "as": "h2"},
+            {"ids": [2], "as": "drop"},        # already used
+        ]
+        groups, stats = web.tidy.apply_plan(blocks, plan)
+        html, _ = web.tidy.render(groups)
+        self.assertIn(long_text, html)
+        self.assertIn("<h2>Section Heading</h2>", html)
+        self.assertEqual(stats["dropped_words"], 0)
+        self.assertEqual(stats["joined"], 0)
+
+    def test_caps_total_clutter_removed(self):
+        page = "<div>" + "".join(f"<p>clutter block {i} here</p>" for i in range(10)) + "</div>"
+        blocks = web.tidy.split_blocks(page)
+        groups, stats = web.tidy.apply_plan(blocks, [{"ids": [i], "as": "drop"} for i in range(1, 11)])
+        self.assertLessEqual(stats["dropped_words"] / 40, web.tidy.MAX_DROP_SHARE)
+        self.assertEqual(stats["dropped_blocks"], 2)
+
+    def test_parses_plans_from_chatty_answers(self):
+        self.assertEqual(web.tidy.parse_plan('Sure!\n```json\n{"blocks": [{"ids": [1], "as": "h2"}]}\n```'), [{"ids": [1], "as": "h2"}])
+        self.assertEqual(web.tidy.parse_plan('<think>hmm {"x":1}</think>[{"ids": [2], "as": "p"}]'), [{"ids": [2], "as": "p"}])
+        with self.assertRaises(web.tidy.TidyError):
+            web.tidy.parse_plan("I can't help with that.")
+
+    def test_tidy_end_to_end_sends_previews_not_full_text(self):
+        long_text = " ".join(["lorem"] * 200)
+        page = MESSY.replace("Intro text here.", long_text)
+        reply = chat_reply('{"blocks": [{"ids": [2], "as": "h2"}, {"ids": [3, 4], "as": "p"}, {"ids": [5], "as": "drop"}]}')
+        with patch.object(web.tidy.requests, "post", return_value=reply) as post:
+            result = web.tidy.tidy(page)
+        sent = post.call_args.kwargs["json"]
+        self.assertEqual(post.call_args.args[0], "http://router.test/v1/chat/completions")
+        self.assertEqual(sent["model"], "main-model")
+        self.assertEqual(sent["temperature"], 0)
+        self.assertIn("[2] <text> Section Heading", sent["messages"][1]["content"])
+        self.assertNotIn(long_text, sent["messages"][1]["content"])
+        self.assertIn("<h2>Section Heading</h2>", result["html"])
+        self.assertIn(long_text, result["html"])
+        self.assertEqual(result["model"], "main-model")
+
+    def test_reads_key_from_file(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".key", delete=False) as handle:
+            handle.write("secret-key\n")
+        self.addCleanup(os.remove, handle.name)
+        with patch.dict(os.environ, {"TIDY_API_KEY_FILE": handle.name}):
+            with patch.object(web.tidy.requests, "post", return_value=chat_reply('{"blocks": []}')) as post:
+                web.tidy.tidy(MESSY)
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer secret-key")
+
+    def test_falls_back_when_first_service_is_unreachable(self):
+        fallback = {"TIDY_FALLBACK_API_BASE": "http://localhost:11434/v1", "TIDY_FALLBACK_MODEL": "local-model"}
+        replies = [web.requests.exceptions.ConnectionError(), chat_reply('{"blocks": []}')]
+        with patch.dict(os.environ, fallback), patch.object(web.tidy.requests, "post", side_effect=replies) as post:
+            result = web.tidy.tidy(MESSY)
+        self.assertEqual(result["model"], "local-model")
+        self.assertEqual(post.call_args.args[0], "http://localhost:11434/v1/chat/completions")
+
+    def test_reports_unreachable_and_errors_plainly(self):
+        with patch.object(web.tidy.requests, "post", side_effect=web.requests.exceptions.ConnectionError()):
+            with self.assertRaisesRegex(web.tidy.TidyError, "couldn't reach"):
+                web.tidy.tidy(MESSY)
+        with patch.object(web.tidy.requests, "post", return_value=chat_reply("", status=500)):
+            with self.assertRaisesRegex(web.tidy.TidyError, "error 500"):
+                web.tidy.tidy(MESSY)
+
+
+class TidyRouteTests(unittest.TestCase):
+    def setUp(self):
+        env = patch.dict(os.environ, {**no_tidy_env(), **TIDY_ENV}, clear=True)
+        env.start()
+        self.addCleanup(env.stop)
+        self.network = patch.object(web.requests.sessions.Session, "request", side_effect=AssertionError("Unexpected network access"))
+        self.network.start()
+        self.addCleanup(self.network.stop)
+        web.page_cache.clear()
+        self.addCleanup(web.page_cache.clear)
+        self.client = web.app.test_client()
+
+    def post(self, payload, **kwargs):
+        return self.client.post("/reader/tidy", json=payload, **kwargs)
+
+    def test_tidies_and_sanitizes_what_the_page_sends(self):
+        dirty = MESSY.replace("Intro text here.", 'Intro <script>alert(1)</script><b onclick="x()">text</b> here.')
+        with patch.object(web.tidy.requests, "post", return_value=chat_reply('{"blocks": [{"ids": [2], "as": "h2"}]}')) as post:
+            response = self.post({"html": dirty, "url": URL})
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertIn("<h2>Section Heading</h2>", data["html"])
+        self.assertNotIn("script", data["html"])
+        self.assertNotIn("onclick", data["html"])
+        self.assertNotIn("alert", post.call_args.kwargs["json"]["messages"][1]["content"])
+
+    def test_refuses_other_sites_and_non_json(self):
+        self.assertEqual(self.post({"html": MESSY}, headers={"Origin": "https://evil.example"}).status_code, 403)
+        self.assertEqual(self.client.post("/reader/tidy", data={"html": MESSY}).status_code, 403)
+        self.assertEqual(self.post({"html": ""}).status_code, 400)
+
+    def test_reports_tidy_errors_as_json(self):
+        with patch.object(web.tidy.requests, "post", side_effect=web.requests.exceptions.ConnectionError()):
+            response = self.post({"html": MESSY, "url": URL})
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("couldn't reach", response.get_json()["error"])
+
+    def test_off_when_not_configured(self):
+        with patch.dict(os.environ, no_tidy_env(), clear=True):
+            self.assertEqual(self.post({"html": MESSY}).status_code, 404)
+            web.page_cache[URL] = {"html": READER_PAGE, "timestamp": web.time.time()}
+            self.assertNotIn('id="tidy"', self.client.get("/reader/" + URL).get_data(as_text=True))
+
+    def test_reader_shows_tidy_button_when_configured(self):
+        web.page_cache[URL] = {"html": READER_PAGE, "timestamp": web.time.time()}
+        response = self.client.get("/reader/" + URL)
+        self.assertIn('id="tidy"', response.get_data(as_text=True))
+        self.assertIn("connect-src 'self'", response.headers["Content-Security-Policy"])
+
+    def test_local_env_file_never_overrides_real_settings(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as handle:
+            handle.write("# comment\nTIDY_MODEL=from-file\nNEW_9001FT_SETTING='quoted value'\n")
+        self.addCleanup(os.remove, handle.name)
+        web.load_local_env(handle.name)
+        self.assertEqual(os.environ["TIDY_MODEL"], "main-model")
+        self.assertEqual(os.environ["NEW_9001FT_SETTING"], "quoted value")
+
+
 class PublicWordingTests(unittest.TestCase):
     """The project never advertises getting around paywalls or similar."""
     BANNED = re.compile(
@@ -381,6 +566,22 @@ class ReaderTests(unittest.TestCase):
         self.assertIn('src="https://img.example.com/a.jpg"', content)
         self.assertIn(f'data-fallback-src="{archived}"', content)
         self.assertIn('srcset="https://img.example.com/a.jpg 1x, https://img.example.com/a.jpg?w=2 2x"', content)
+
+    def test_wiki_edit_links_are_removed(self):
+        fragment = web.reader.clean_fragment(
+            '<p><h2>Safety</h2><span><span>[</span><a href="https://en.wikipedia.org/w/index.php?title=Ladder&action=edit&section=6">edit</a><span>]</span></span></p>'
+            '<p>Read the <a href="https://example.com/edit-guide">edit guide</a>.</p>', "https://en.wikipedia.org/wiki/")
+        text = " ".join(fragment.get_text(" ").split())
+        self.assertEqual(text, "Safety Read the edit guide .")
+
+    def test_jump_links_within_the_article_become_plain_text(self):
+        base = "https://example.com/news/"
+        fragment = web.reader.clean_fragment(
+            f'<p>Fact<a href="{base}#cite-1">[1]</a> and <a href="#top">top</a> and <a href="/other#part">other</a>.</p>', base)
+        links = fragment.find_all("a")
+        self.assertNotIn("href", links[0].attrs)
+        self.assertNotIn("href", links[1].attrs)
+        self.assertEqual(links[2]["href"], "https://example.com/other#part")
 
     def test_short_pages_report_no_article(self):
         article = web.reader.extract_article("<html><body><p>Hi.</p></body></html>", URL)
