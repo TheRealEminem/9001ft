@@ -101,5 +101,17 @@
   "library_error_expired": "This page has expired. Go back, reload it and try again.",
   "library_error_draft": "That page is no longer waiting to be kept. Send it again.",
   "library_error_private": "Pages on your own network can't be kept.",
-  "library_error_failed": "Couldn't keep this page: {reason}."
+  "library_error_failed": "Couldn't keep this page: {reason}.",
+  "app_description": "Paste a link and read the page cleanly, or in Reader view.",
+  "logout_link": "Log out",
+  "login_title": "Enter the password to continue.",
+  "login_label": "Password",
+  "login_button": "Log in",
+  "login_wrong": "That password isn't right.",
+  "login_too_many": "Too many wrong passwords. Wait a few minutes and try again.",
+  "share_no_link_title": "No link to read",
+  "share_no_link_text": "What you shared didn't include a web address. Share a page from your browser instead.",
+  "offline_title": "You're offline",
+  "offline_text": "9001ft needs a connection to fetch pages. Try again when you're back online.",
+  "back_home": "Back to 9001ft"
 }

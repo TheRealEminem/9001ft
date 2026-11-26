@@ -8,6 +8,10 @@ SETTINGS_TEMPLATE = """<!DOCTYPE html>
 <meta name="referrer" content="no-referrer">
 <title>AI settings · 9001ft Ladder</title>
 <link rel="icon" href="/favicon.ico" type="image/png">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#9b4dca">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<script src="/static/app.js" defer nonce="{{ nonce }}"></script>
 <style>
   :root { --bg: #ffffff; --text: #23232b; --muted: #6b6b76; --rule: #e3e1ea; --card: #faf9fd; --accent: #9b4dca; --accent-text: #fff; --bad: #b42318; --good: #1b7f3b; }
   :root.dark { --bg: #191a21; --text: #ececf1; --muted: #a3a3b0; --rule: #33343f; --card: #22232c; --accent: #7359f8; --bad: #ff8a80; --good: #7ad79a; }
@@ -41,11 +45,13 @@ SETTINGS_TEMPLATE = """<!DOCTYPE html>
   #status.bad { color: var(--bad); }
   #status.good { color: var(--good); }
   [hidden] { display: none !important; }
+  .logout { float: right; }
 </style>
 </head>
 <body>
 <main>
   <a href="/">&larr; 9001ft Ladder</a>
+  {% if show_logout %}<a class="logout" href="/logout">Log out</a>{% endif %}
   <h1>AI settings</h1>
   <p class="lede">AI is optional. It powers <b>&#10024; Tidy up</b> in Reader view, which fixes the layout of a messy article without changing its words. Nothing is sent anywhere until you press it.</p>
   <p class="note" id="env-note" hidden>These settings currently come from <code>.env.local</code>. Saving here replaces them; the file itself isn't changed.</p>
@@ -239,5 +245,6 @@ SETTINGS_TEMPLATE = """<!DOCTYPE html>
 def content_security_policy(nonce):
     return (
         "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; "
-        f"script-src 'nonce-{nonce}'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+        f"script-src 'nonce-{nonce}'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; "
+        "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
     )

@@ -39,7 +39,14 @@ import library  # noqa: E402
 import library_page  # noqa: E402
 import export  # noqa: E402
 
+import auth  # noqa: E402
+import pwa  # noqa: E402
+
+VERSION = "0.4.0"
+
 app = flask.Flask(__name__)
+# Optional password (LADDER_PASSWORD): a login in front of every page. Off by default.
+auth.init_app(app)
 # The Send to Reader bookmarklet posts a whole page; Werkzeug's default limit
 # for a form field is 500 KB, which many article pages exceed.
 app.config["MAX_FORM_MEMORY_SIZE"] = 25 * 1024 * 1024
@@ -182,6 +189,19 @@ _DEFAULT_STRINGS = {
     "library_error_draft": "That page is no longer waiting to be kept. Send it again.",
     "library_error_private": "Pages on your own network can't be kept.",
     "library_error_failed": "Couldn't keep this page: {reason}.",
+
+    "app_description": "Paste a link and read the page cleanly, or in Reader view.",
+    "logout_link": "Log out",
+    "login_title": "Enter the password to continue.",
+    "login_label": "Password",
+    "login_button": "Log in",
+    "login_wrong": "That password isn't right.",
+    "login_too_many": "Too many wrong passwords. Wait a few minutes and try again.",
+    "share_no_link_title": "No link to read",
+    "share_no_link_text": "What you shared didn't include a web address. Share a page from your browser instead.",
+    "offline_title": "You're offline",
+    "offline_text": "9001ft needs a connection to fetch pages. Try again when you're back online.",
+    "back_home": "Back to 9001ft",
 }
 
 
@@ -241,6 +261,10 @@ html = """
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <title>9001ft Ladder</title>
     <link rel="icon" href="/favicon.ico" type="image/png">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="theme-color" content="#9b4dca">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+    <script src="/static/app.js" defer></script>
     <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600&display=swap" rel="stylesheet" async>
     <style>
         * { box-sizing: border-box; }
@@ -610,6 +634,7 @@ html = """
             <p>{{ bookmarklet_hint }}</p>
             <p><a class="settings-link" href="/library">&#128218; {{ library_link }}</a></p>
             <p><a class="settings-link" href="/settings">&#9881;&#65039; {{ settings_link }}</a></p>
+            {% if show_logout %}<p><a class="settings-link" href="/logout">{{ logout_link }}</a></p>{% endif %}
         </div>
     </div>
 
@@ -798,8 +823,13 @@ READER_BOOKMARKLET = (
 )
 
 
-def reader_bookmarklet(host_url):
-    return READER_BOOKMARKLET.replace("{action}", host_url.rstrip("/") + "/reader")
+def reader_bookmarklet(host_url, token=None):
+    script = READER_BOOKMARKLET.replace("{action}", host_url.rstrip("/") + "/reader")
+    if token:
+        # With a password set, the bookmarklet proves it came from this home
+        # page (its post comes from another site, without the login cookie).
+        script = script.replace("['url',location.href]]", "['url',location.href],['token','" + token + "']]")
+    return script
 
 
 def render_main_page():
@@ -814,7 +844,8 @@ def render_main_page():
         html,
         steps=build_steps(strings),
         ui_strings=ui_strings,
-        reader_bookmarklet=reader_bookmarklet(request.host_url),
+        reader_bookmarklet=reader_bookmarklet(request.host_url, auth.bookmarklet_token()),
+        show_logout=auth.enabled(),
         **strings,
     )
 
@@ -1361,6 +1392,110 @@ def main_page():
     return render_main_page()
 
 
+# --- self-hosting: health check, login, installable app, share target ---
+
+def _no_store(response):
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.route("/healthz")
+def healthz():
+    return _no_store(flask.jsonify(ok=True, version=VERSION))
+
+
+def render_login(error=None, status=200):
+    strings = load_strings()
+    nonce = secrets.token_urlsafe(16)
+    body = flask.render_template_string(
+        auth.LOGIN_TEMPLATE, nonce=nonce, error=error,
+        next_path=auth.safe_next(request.args.get("next")), **strings)
+    response = Response(body, status=status, mimetype="text/html")
+    response.headers["Content-Security-Policy"] = pwa.content_security_policy(nonce)
+    return _no_store(response)
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    next_path = auth.safe_next(request.args.get("next"))
+    if not auth.enabled() or (request.method == "GET" and auth.logged_in()):
+        return flask.redirect(next_path, 303)
+    if request.method == "GET":
+        return render_login()
+    origin = request.headers.get("Origin")
+    if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
+        return "not allowed from another site", 403
+    strings = load_strings()
+    address = auth.client_address()
+    if auth.failed_logins.blocked(address):
+        return render_login(strings["login_too_many"], 429)
+    if not auth.password_matches(request.form.get("password", "")):
+        auth.failed_logins.record(address)
+        return render_login(strings["login_wrong"], 401)
+    auth.failed_logins.forget(address)
+    auth.log_in()
+    return flask.redirect(next_path, 303)
+
+
+@app.route("/logout")
+def logout():
+    auth.log_out()
+    return _no_store(flask.redirect("/login" if auth.enabled() else "/", 303))
+
+
+def asset_path(*parts):
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", *parts)
+
+
+@app.route("/manifest.webmanifest")
+def manifest():
+    response = Response(json.dumps(pwa.manifest(load_strings()["app_description"])),
+                        mimetype="application/manifest+json")
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    return response
+
+
+@app.route("/icons/<name>")
+def app_icon(name):
+    if name not in pwa.ICON_FILES:
+        return "", 404
+    return flask.send_from_directory(asset_path("assets", "icons"), name, mimetype="image/png", max_age=86400)
+
+
+@app.route("/sw.js")
+def service_worker():
+    response = flask.send_from_directory(app.static_folder, "sw.js", mimetype="text/javascript", max_age=0)
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["Service-Worker-Allowed"] = "/"
+    return response
+
+
+def render_message(title, text, status=200):
+    strings = load_strings()
+    nonce = secrets.token_urlsafe(16)
+    body = flask.render_template_string(pwa.MESSAGE_TEMPLATE, nonce=nonce, title=title, text=text,
+                                        button=strings["back_home"], lang=strings["lang"])
+    response = Response(body, status=status, mimetype="text/html")
+    response.headers["Content-Security-Policy"] = pwa.content_security_policy(nonce)
+    return response
+
+
+@app.route("/offline")
+def offline_page():
+    strings = load_strings()
+    return render_message(strings["offline_title"], strings["offline_text"])
+
+
+@app.route("/share")
+def share():
+    """Android's share sheet sends links here once the app is installed."""
+    link = pwa.first_web_link(request.args.get("url"), request.args.get("text"))
+    if link:
+        return flask.redirect("/reader/" + quote(link, safe=":/?#[]@!$&'()*+,;=%~"), 303)
+    strings = load_strings()
+    return _no_store(render_message(strings["share_no_link_title"], strings["share_no_link_text"]))
+
+
 @app.route("/status")
 def status_stream():
     raw_url = request.args.get("url", "")
@@ -1822,7 +1957,8 @@ def settings_view():
     nonce = secrets.token_urlsafe(16)
     providers = {key: {k: v for k, v in spec.items() if k in ("label", "key_hint", "models")}
                  for key, spec in ai_settings.PROVIDERS.items()}
-    body = flask.render_template_string(settings_page.SETTINGS_TEMPLATE, nonce=nonce, providers=providers)
+    body = flask.render_template_string(settings_page.SETTINGS_TEMPLATE, nonce=nonce, providers=providers,
+                                        show_logout=auth.enabled())
     response = Response(body, mimetype="text/html")
     response.headers["Content-Security-Policy"] = settings_page.content_security_policy(nonce)
     response.headers["Cache-Control"] = "no-store"

@@ -266,6 +266,7 @@ def content_security_policy(nonce):
     return (
         "default-src 'none'; img-src * data: blob:; media-src *; frame-src *; "
         f"style-src 'unsafe-inline'; script-src 'nonce-{nonce}'; connect-src 'self'; "
+        "worker-src 'self'; manifest-src 'self'; "
         "base-uri 'none'; form-action 'none'"
     )
 
@@ -282,6 +283,10 @@ READER_TEMPLATE = """<!DOCTYPE html>
 <meta name="referrer" content="no-referrer">
 <title>{{ article.title or source_url }}</title>
 <link rel="icon" href="/favicon.ico" type="image/png">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#9b4dca">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<script src="/static/app.js" defer nonce="{{ nonce }}"></script>
 <style>
   :root {
     --bg: #fbfaf7; --text: #1d1c1a; --muted: #6b6760; --rule: #e6e2da;
