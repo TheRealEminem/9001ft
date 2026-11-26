@@ -2499,7 +2499,7 @@ class SourceBadgeTests(ReaderFirstBase):
 
     def test_reader_bar_links_are_renamed(self):
         body = self.reader(source={"kind": "live"})
-        self.assertRegex(body, r'<a href="/' + re.escape(URL) + r'" id="full-page" title="The whole page as fetched, with its layout and scripts">Full page</a>')
+        self.assertRegex(body, r'<a class="extra" href="/' + re.escape(URL) + r'" id="full-page" title="The whole page as fetched, with its layout and scripts">Full page</a>')
         live = re.search(r'<a [^>]*id="live-page"[^>]*>([^<]*)', body)
         self.assertIn(f'href="{URL}"', live.group(0))
         self.assertIn('title="Opens the real page in a new tab, with all its animations and interactive parts"', live.group(0))
@@ -2767,6 +2767,38 @@ class ReaderDefaultTests(ReaderFirstBase):
         self.assertIn('class="duster"', art)
         self.assertNotIn("<script", art)
         self.assertNotRegex(art, r"\son[a-z]+=")
+
+
+class PhoneLayoutTests(unittest.TestCase):
+    def setUp(self):
+        env = patch.dict(os.environ, no_tidy_env(), clear=True)
+        env.start()
+        self.addCleanup(env.stop)
+        self.network = patch.object(web.requests.sessions.Session, "request", side_effect=AssertionError("Unexpected network access"))
+        self.network.start()
+        self.addCleanup(self.network.stop)
+        self.client = web.app.test_client()
+
+    def test_reader_toolbar_has_a_more_button_for_phones(self):
+        web.page_cache[URL] = {"html": READER_PAGE, "timestamp": web.time.time()}
+        self.addCleanup(web.page_cache.clear)
+        body = self.client.get("/reader/" + URL).get_data(as_text=True)
+        self.assertIn('id="more" aria-expanded="false"', body)
+        for element_id in ("full-page", "live-page", "smaller", "larger", "theme"):
+            self.assertRegex(body, r'class="extra"[^>]*id="' + element_id + '"')
+        self.assertIn(".bar.show-more .extra", body)
+
+    def test_phones_get_a_tip_instead_of_drag_instructions(self):
+        home = self.client.get("/").get_data(as_text=True)
+        self.assertIn('class="phone-tip"', home)
+        self.assertIn("@media (hover: none) and (pointer: coarse)", home)
+        library = self.client.get("/library").get_data(as_text=True)
+        self.assertIn('class="phone-tip"', library)
+
+    def test_only_main_actions_are_yellow_buttons(self):
+        css = web.theme.style_tag()
+        self.assertNotIn("a.button {\n    background: var(--yellow)", css)
+        self.assertIn('class="button primary"', web.pwa.MESSAGE_TEMPLATE)
 
 
 if __name__ == "__main__":

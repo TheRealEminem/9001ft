@@ -75,13 +75,13 @@ _COMPONENTS = """
   }
 
   /* Panels: thick ink border and a hard shadow, like the home page's form. */
-  .card, .notice, .page, .note, .mode, .body, .confirm, form.panel, main > form:not(#form) {
+  .card, .notice, .page, .note, .mode, .body, .confirm, form.panel, main > form:not(#form):has(input:not([type=hidden]), select, textarea) {
     background: var(--card);
     border: 3px solid var(--rule);
     border-radius: 14px;
   }
-  .card, .page, form.panel, main > form:not(#form) { box-shadow: 6px 6px 0 var(--shadow); }
-  form.panel, main > form:not(#form) { padding: 16px 18px; }
+  .card, .page, form.panel, main > form:not(#form):has(input:not([type=hidden]), select, textarea) { box-shadow: 6px 6px 0 var(--shadow); }
+  form.panel, main > form:not(#form):has(input:not([type=hidden]), select, textarea) { padding: 16px 18px; }
   .notice { box-shadow: 3px 3px 0 var(--shadow); font-weight: 600; }
   .notice.good { border-color: var(--good); }
   .notice.bad, .error { border-color: var(--bad); color: var(--bad); background: var(--bad-bg); }
@@ -101,11 +101,11 @@ _COMPONENTS = """
   }
   button:hover, .button:hover, a.button:hover { transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--shadow); }
   button:active, .button:active, a.button:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--shadow); }
-  button.primary, .button.primary, main > form:not(#form) button[type=submit], a.button {
+  button.primary, .button.primary, main > form:not(#form) button[type=submit] {
     background: var(--yellow); color: #1d2b30 !important; border-width: 3px; box-shadow: 4px 4px 0 var(--shadow);
     font-size: 1.15rem;
   }
-  button.primary:hover, .button.primary:hover, a.button:hover { background: var(--yellow-hover); }
+  button.primary:hover, .button.primary:hover { background: var(--yellow-hover); }
   .danger, button.danger { background: var(--red) !important; color: #ffffff !important; }
   button:disabled { opacity: 0.6; cursor: progress; transform: none; }
 

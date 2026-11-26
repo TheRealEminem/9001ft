@@ -116,7 +116,7 @@ MESSAGE_TEMPLATE = """<!DOCTYPE html>
   <img src="/icons/icon-192.png" width="112" height="112" alt="">
   <h1>{{ title }}</h1>
   <p>{{ text }}</p>
-  <a class="button" href="/">{{ button }}</a>
+  <a class="button primary" href="/">{{ button }}</a>
 </main>
 </body>
 </html>

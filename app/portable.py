@@ -212,6 +212,12 @@ _DEFAULT_STRINGS = {
     "export_label_audio": "Audio",
     "export_label_embed": "Embedded content",
     "settings_link": "AI settings (optional)",
+    "phone_tip": (
+        "On a phone? Add 9001ft to your home screen from your browser's menu. On Android you can then "
+        "share any article straight to it from the share menu; on iPhone, copy the link and paste it above."
+    ),
+    "library_phone_tip": "On a phone, open a page in 9001ft and press \U0001F4CC Keep a copy, or paste its link above.",
+    "reader_more": "More options",
     "reader_empty": (
         "Couldn't find the article text on this page. "
         "Try the full page instead:"
@@ -468,6 +474,12 @@ html = """
 
         .bookmarklet { max-width: 520px; margin: 26px auto 0; text-align: center; font-size: 14px; color: var(--muted); }
         .bookmarklet p { margin: 10px 0 0; line-height: 1.5; }
+        .phone-tip { display: none; }
+        /* Phones and tablets can't drag a bookmarklet to a bookmarks bar. */
+        @media (hover: none) and (pointer: coarse) {
+            .bookmarklet-link, .bookmarklet-hint { display: none !important; }
+            .phone-tip { display: block; }
+        }
         .bookmarklet-link {
             display: inline-block;
             padding: 9px 16px;
@@ -833,9 +845,10 @@ html = """
         </p>
         <div class="bookmarklet">
             <a class="bookmarklet-link" href="{{ reader_bookmarklet }}" onclick="return false;"><span aria-hidden="true">&#128214;</span>&nbsp; {{ bookmarklet_label }}</a>
-            <p>{{ bookmarklet_hint }}</p>
-            <p><a class="settings-link" href="/library">&#128218; {{ library_link }}</a></p>
-            <p><a class="settings-link" href="/settings">&#9881;&#65039; {{ settings_link }}</a></p>
+            <p class="bookmarklet-hint">{{ bookmarklet_hint }}</p>
+            <p class="phone-tip">{{ phone_tip }}</p>
+            <p><a class="settings-link" href="/library"><span aria-hidden="true">&#128218;</span>&nbsp;{{ library_link }}</a></p>
+            <p><a class="settings-link" href="/settings"><span aria-hidden="true">&#9881;&#65039;</span>&nbsp;{{ settings_link }}</a></p>
             {% if show_logout %}<p><a class="settings-link" href="/logout">{{ logout_link }}</a></p>{% endif %}
         </div>
     </div>
