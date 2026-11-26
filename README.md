@@ -8,6 +8,7 @@ A small reader you run on your own computer. Paste a link and get the page back 
 
 - **Reader view.** Any page becomes a clean article: title, site, author, date, reading time, text and images, with light, dark and sepia themes and adjustable text size. The article's wording is never changed.
 - **Send to Reader bookmarklet.** Click it on any page open in your own browser, including articles you subscribe to, and that page opens in Reader view exactly as your browser had it.
+- **Your library.** Press **📌 Keep a copy** to save a page on your computer with its styles, images, fonts and scripts, plus a Reader version, to read later, even offline.
 - **AI tidy (optional).** When an article comes out messy, one click asks an AI model how it should be laid out: headings, lists, paragraphs that were split apart, clutter to leave out. The model never writes text; the page is rebuilt from the original words, and a check confirms nothing was reworded.
 - **archive.org pages that keep their look.** Pages loaded from the Wayback Machine keep their styles and images instead of arriving as bare text.
 
@@ -71,7 +72,26 @@ javascript:(function(){var d=document.documentElement.cloneNode(true);d.querySel
 javascript:(function(){window.location.href="http://localhost:5013/"+encodeURIComponent(window.location.href);})();
 ```
 
-A few sites block forms from sending data to other addresses (a `form-action` security policy). On those, Send to Reader does nothing; use the second bookmarklet instead.
+**Keep a copy in 9001ft** sends the whole page your browser is showing, styles and scripts included, to your library (see below). It's on the library page, ready to drag:
+
+```javascript
+javascript:(function(){var d=document.documentElement.cloneNode(true),s=document.querySelectorAll('style'),c=d.querySelectorAll('style');for(var i=0;i<s.length&&i<c.length;i++){if(!c[i].textContent.trim()){try{c[i].textContent=Array.prototype.map.call(s[i].sheet.cssRules,function(r){return r.cssText;}).join(' ');}catch(e){}}}var t=document.doctype?'<!DOCTYPE '+document.doctype.name+'>':'';var f=document.createElement('form');f.method='post';f.action='http://localhost:5013/library/keep';f.target='_blank';f.enctype='multipart/form-data';f.acceptCharset='UTF-8';f.style.display='none';[['html',t+d.outerHTML],['url',location.href]].forEach(function(p){var e=document.createElement('textarea');e.name=p[0];e.value=p[1];f.appendChild(e);});document.body.appendChild(f);f.submit();f.remove();})();
+```
+
+A few sites block forms from sending data to other addresses (a `form-action` security policy). On those, Send to Reader and Keep a copy do nothing; use Open in 9001ft instead.
+
+## Your library
+
+Press **📌 Keep a copy** on any page 9001ft opened (next to the 📖 button), in Reader view, or with the **Keep a copy in 9001ft** bookmarklet on a page in your own browser. A confirmation page shows what will be saved; nothing is kept until you press the button there.
+
+9001ft then saves the page together with everything it uses: stylesheets (and the fonts, images and stylesheets they load), images in every size the page offers, fonts, scripts and video posters, all rewritten to point at the local copies, so the page opens offline looking as it did, animations included where its scripts allow. Videos, frames and links still point at the live site. It also saves the Reader version (title, site, author, date, reading time and text, with the saved images), which works offline too.
+
+Open **📚 Your library** from the home page (`http://localhost:5013/library`). Each copy shows its title, site, the date you kept it and its size, with buttons to open the copy, open the Reader version, open the live page, or delete it (it asks first).
+
+- Copies are saved in `data/library/` (or under `LADDER_DATA_DIR`), readable only by your user. Each is capped at 50 MB, and any one file at 15 MB. Files that fail, are too big or aren't what the page said they were are skipped, and the library lists which ones and why.
+- Pages that used a public copy from archive.org are kept with the archived styles and images.
+- The files a page uses are downloaded by your own server, which only fetches from the public internet: it refuses addresses on your own network (private, loopback and link-local), checks again after every redirect, and checks the address it actually connected to.
+- A kept page still has its own scripts, so it opens sandboxed, just like pages 9001ft fetches: its scripts can't reach your settings or your other copies. Only a 9001ft page can save or delete copies; other sites can at most bring up the confirmation page.
 
 ## AI tidy (optional)
 
@@ -133,7 +153,7 @@ venv/bin/python -m pip install pytest
 venv/bin/python -m pytest -q
 ```
 
-The tests run offline: Flask's test client stands in for the browser, and every outside request is mocked. They cover the routes, error handling, languages, HTML processing, archive.org rewriting, Reader view extraction and sanitizing, AI tidy plans and their safety checks, the archive.org relay, the bookmarklet endpoint, caching, archive fallbacks and the progress stream. GitHub Actions runs them on every push and pull request (`.github/workflows/test.yml`).
+The tests run offline: Flask's test client stands in for the browser, and every outside request is mocked. They cover the routes, error handling, languages, HTML processing, archive.org rewriting, Reader view extraction and sanitizing, AI tidy plans and their safety checks, the archive.org relay, the bookmarklet endpoints, the library (saving, sandboxing, address checks and size limits), caching, archive fallbacks and the progress stream. GitHub Actions runs them on every push and pull request (`.github/workflows/test.yml`).
 
 ## Credits
 

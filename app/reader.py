@@ -361,6 +361,7 @@ READER_TEMPLATE = """<!DOCTYPE html>
     <a class="brand" href="/">9001ft</a>
     {% if original_href %}<a href="{{ original_href }}">{{ reader_original }}</a>{% endif %}
     <a href="{{ source_url }}" rel="noopener noreferrer">{{ reader_source }} &#8599;</a>
+    {% if keep_href %}<a href="{{ keep_href }}" id="keep-copy">&#128204; {{ keep_button }}</a>{% endif %}
     <button type="button" id="smaller" title="{{ reader_smaller }}" aria-label="{{ reader_smaller }}">A&minus;</button>
     <button type="button" id="larger" title="{{ reader_larger }}" aria-label="{{ reader_larger }}">A+</button>
     {% if tidy_enabled and article.content %}<button type="button" id="tidy">&#10024; {{ tidy_button }}</button>{% endif %}

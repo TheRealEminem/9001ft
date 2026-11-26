@@ -1,4 +1,5 @@
 """Offline regression tests. Run: python -m unittest discover -s tests -v."""
+import hashlib
 import json
 import os
 import re
@@ -859,6 +860,470 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(web.reader_target_url("http://h:1/reader/https:/a.com/b"), "https://a.com/b")
         self.assertEqual(web.reader_target_url("http://h:1/reader/a.com"), "https://a.com")
         self.assertIsNone(web.reader_target_url("http://h:1/https://a.com"))
+
+
+LIBRARY_PAGE = """<!DOCTYPE html>
+<html><head><title>Ladders &amp; you</title>
+<base href="/news/">
+<meta http-equiv="Content-Security-Policy" content="img-src https://cdn.example.com">
+<meta charset="iso-8859-1">
+<link rel="stylesheet" href="/static/site.css" integrity="sha384-abc" crossorigin="anonymous">
+<link rel="preload" as="font" href="https://cdn.example.com/fonts/head.woff2">
+<link rel="canonical" href="/news/article">
+<style>@import "more.css"; .hero { background: url(img/bg.png); } .x { background: url("data:image/png;base64,AAAA"); }</style>
+<script src="app.js"></script>
+</head><body>
+<article><h1>Ladders &amp; you</h1>
+<p>""" + "A long paragraph about very tall ladders. " * 20 + """</p>
+<img src="pic.jpg" srcset="pic.jpg 1x, pic@2x.jpg 2x" alt="A ladder">
+<img src="data:image/gif;base64,R0lGOD" data-src="lazy.jpg" alt="">
+<video poster="poster.jpg" src="movie.mp4"></video>
+<svg><use href="sprite.svg#icon"></use></svg>
+<p style="background-image: url('/img/dots.png')">More about ladders.</p>
+<a href="/other">Another article</a> <a href="#top">Top</a>
+<img src="https://intranet.example/secret.png" alt="">
+<img src="missing.png" alt="">
+<img src="notanimage.png" alt="">
+</article></body></html>"""
+
+
+def library_asset(body, content_type, status=200, headers=None):
+    return {"body": body, "type": content_type, "status": status, "headers": headers or {}}
+
+
+LIBRARY_FILES = {
+    "https://example.com/static/site.css": library_asset(
+        b'@charset "utf-8"; @font-face { src: url(../fonts/body.woff2) format("woff2"); } h1 { background: url(data:image/png;base64,AAAA); }',
+        "text/css"),
+    "https://example.com/fonts/body.woff2": library_asset(b"wOF2body", "font/woff2"),
+    "https://cdn.example.com/fonts/head.woff2": library_asset(b"wOF2head", "application/octet-stream"),
+    "https://example.com/news/more.css": library_asset(b".more { mask-image: url(icons/eye.svg); }", "text/css; charset=utf-8"),
+    "https://example.com/news/icons/eye.svg": library_asset(b"<svg xmlns='http://www.w3.org/2000/svg'/>", "image/svg+xml"),
+    "https://example.com/news/img/bg.png": library_asset(b"\x89PNGbg", "image/png"),
+    "https://example.com/news/app.js": library_asset(b"console.log('hi');", "application/javascript"),
+    "https://example.com/news/pic.jpg": library_asset(b"\xff\xd8pic", "image/jpeg"),
+    "https://example.com/news/pic@2x.jpg": library_asset(b"\xff\xd8pic2", "image/jpeg"),
+    "https://example.com/news/lazy.jpg": library_asset(b"\xff\xd8lazy", "image/jpeg"),
+    "https://example.com/news/poster.jpg": library_asset(b"\xff\xd8poster", "image/jpeg"),
+    "https://example.com/news/sprite.svg": library_asset(b"<svg xmlns='http://www.w3.org/2000/svg'/>", "image/svg+xml"),
+    "https://example.com/img/dots.png": library_asset(b"\x89PNGdots", "image/png"),
+    "https://example.com/news/notanimage.png": library_asset(b"<html>Not found</html>", "text/html"),
+}
+
+
+class FakeSession:
+    """Stands in for library.make_session(): serves LIBRARY_FILES, 404 otherwise."""
+
+    def __init__(self, files=None):
+        self.files = dict(LIBRARY_FILES if files is None else files)
+        self.calls = []
+
+    def get(self, url, headers=None, **kwargs):
+        self.calls.append(url)
+        entry = self.files.get(url) or library_asset(b"gone", "text/html", status=404)
+        response = Mock(status_code=entry["status"], headers=dict({"Content-Type": entry["type"]}, **entry["headers"]))
+        response.iter_content.return_value = [entry["body"]]
+        return response
+
+
+REAL_MAKE_SESSION = web.library.make_session
+
+
+def fake_resolve(host, port):
+    if re.match(r"^[\d.]+$", host):
+        return {host}
+    return {"10.0.0.5"} if host.startswith("intranet") else {"93.184.216.34"}
+
+
+class LibraryTests(unittest.TestCase):
+    def setUp(self):
+        self.env = patch.dict(os.environ, {"LOCALE": "en"})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.network = patch.object(web.requests.sessions.Session, "request", side_effect=AssertionError("Unexpected network access"))
+        self.network.start()
+        self.addCleanup(self.network.stop)
+        resolve = patch.object(web.library, "_resolve", side_effect=fake_resolve)
+        resolve.start()
+        self.addCleanup(resolve.stop)
+        self.session = FakeSession()
+        sessions = patch.object(web.library, "make_session", side_effect=lambda: self.session)
+        sessions.start()
+        self.addCleanup(sessions.stop)
+        self.clear()
+        self.addCleanup(self.clear)
+        web.page_cache.clear()
+        self.addCleanup(web.page_cache.clear)
+        web.load_strings_for_locale.cache_clear()
+        self.client = web.app.test_client()
+
+    def clear(self):
+        import shutil
+        shutil.rmtree(web.library.library_dir(), ignore_errors=True)
+
+    def csrf(self, response):
+        return re.search(r'name="csrf" value="([^"]+)"', response.get_data(as_text=True)).group(1)
+
+    def keep(self, page=LIBRARY_PAGE):
+        web.page_cache[web.normalize_cache_url(URL)] = {"html": page, "timestamp": web.time.time()}
+        confirm = self.client.get("/library/save", query_string={"url": URL})
+        response = self.client.post("/library/save", data={"url": URL, "csrf": self.csrf(confirm)})
+        self.assertEqual(response.status_code, 303, response.get_data(as_text=True))
+        return response.headers["Location"].split("saved=", 1)[1]
+
+    def folder(self, item_id):
+        return Path(web.library.library_dir()) / item_id
+
+    # --- the snapshot itself ---
+
+    def test_copy_has_every_asset_with_local_addresses(self):
+        meta = web.library.save(LIBRARY_PAGE, URL, "9001ft", session=self.session)
+        folder = self.folder(meta["id"])
+        page = (folder / "index.html").read_text(encoding="utf-8")
+
+        def local(url):
+            return "assets/" + hashlib.sha256(url.encode()).hexdigest()[:20]
+
+        self.assertNotIn("<base", page)
+        self.assertNotIn("Content-Security-Policy", page)
+        self.assertNotIn("integrity", page)
+        self.assertNotIn("iso-8859-1", page)
+        self.assertIn('<meta charset="utf-8"/>', page)
+        self.assertIn('href="' + local("https://example.com/static/site.css") + '.css"', page)
+        self.assertIn('href="' + local("https://cdn.example.com/fonts/head.woff2") + '.woff2"', page)
+        self.assertIn('@import "' + local("https://example.com/news/more.css") + '.css"', page)
+        self.assertIn("url(" + local("https://example.com/news/img/bg.png") + ".png)", page)
+        self.assertIn('src="' + local("https://example.com/news/app.js") + '.js"', page)
+        self.assertIn(local("https://example.com/news/pic.jpg") + ".jpg 1x, " + local("https://example.com/news/pic@2x.jpg") + ".jpg 2x", page)
+        self.assertIn('data-src="' + local("https://example.com/news/lazy.jpg") + '.jpg"', page)
+        self.assertIn('poster="' + local("https://example.com/news/poster.jpg") + '.jpg"', page)
+        self.assertIn('href="' + local("https://example.com/news/sprite.svg") + '.svg#icon"', page)
+        self.assertIn("url('" + local("https://example.com/img/dots.png") + ".png')", page)
+        # Not downloaded, but still pointing at the live site from inside the copy.
+        self.assertIn('src="https://example.com/news/movie.mp4"', page)
+        self.assertIn('href="https://example.com/other"', page)
+        self.assertIn('href="https://example.com/news/article"', page)
+        self.assertIn('href="#top"', page)
+        self.assertIn("data:image/png;base64,AAAA", page)
+        # Stylesheets are rewritten too, pointing at files beside them.
+        css = (folder / (local("https://example.com/static/site.css") + ".css")).read_text(encoding="utf-8")
+        self.assertIn("url(" + local("https://example.com/fonts/body.woff2")[len("assets/"):] + ".woff2)", css)
+        self.assertNotIn("@charset", css)
+        more = (folder / (local("https://example.com/news/more.css") + ".css")).read_text(encoding="utf-8")
+        self.assertIn(local("https://example.com/news/icons/eye.svg")[len("assets/"):] + ".svg", more)
+        self.assertEqual((folder / (local("https://example.com/fonts/body.woff2") + ".woff2")).read_bytes(), b"wOF2body")
+        # Everything is private to this user.
+        for path in folder.rglob("*"):
+            if path.is_file():
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600, path)
+        self.assertEqual(stat.S_IMODE(folder.stat().st_mode), 0o700)
+
+    def test_copy_records_what_was_skipped_and_why(self):
+        meta = web.library.save(LIBRARY_PAGE, URL, "9001ft", session=self.session)
+        reasons = {skip["url"]: skip["reason"] for skip in meta["skipped"]}
+        self.assertEqual(reasons["https://intranet.example/secret.png"], "on a private or local network")
+        self.assertEqual(reasons["https://example.com/news/missing.png"], "the site answered 404")
+        self.assertEqual(reasons["https://example.com/news/notanimage.png"], "expected an image, got a web page")
+        self.assertNotIn("https://intranet.example/secret.png", self.session.calls)
+        self.assertEqual(meta["files"], 13)
+        self.assertEqual(meta["title"], "Ladders & you")
+        self.assertEqual(meta["site"], "example.com")
+        self.assertTrue(meta["has_text"])
+        self.assertGreater(meta["size"], len(LIBRARY_PAGE))
+        saved = json.loads((self.folder(meta["id"]) / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["skipped"], meta["skipped"])
+
+    def test_reader_version_uses_saved_images(self):
+        meta = web.library.save(LIBRARY_PAGE, URL, "9001ft", session=self.session)
+        article = json.loads((self.folder(meta["id"]) / "reader.json").read_text(encoding="utf-8"))
+        self.assertEqual(article["title"], "Ladders & you")
+        self.assertIn("very tall ladders", article["content"])
+        self.assertRegex(article["content"], r'src="assets/[0-9a-f]{20}\.jpg"')
+        self.assertNotIn("https://example.com/news/pic.jpg", article["content"])
+
+    def test_redirects_to_local_addresses_are_refused(self):
+        files = {
+            "https://example.com/a.png": library_asset(b"", "text/html", status=302, headers={"Location": "http://127.0.0.1:5013/settings"}),
+            "https://example.com/b.png": library_asset(b"", "text/html", status=301, headers={"Location": "/c.png"}),
+            "https://example.com/c.png": library_asset(b"\x89PNG", "image/png"),
+        }
+        session = FakeSession(files)
+        meta = web.library.save('<img src="a.png"><img src="b.png">', "https://example.com/", "browser", session=session)
+        self.assertEqual(meta["skipped"], [{"url": "https://example.com/a.png", "reason": "on a private or local network"}])
+        self.assertNotIn("http://127.0.0.1:5013/settings", session.calls)
+        self.assertIn("https://example.com/c.png", session.calls)
+        self.assertEqual(meta["files"], 1)
+
+    def test_missing_archived_files_fall_back_to_the_live_copy(self):
+        archived = "https://web.archive.org/web/2026id_/https://example.com/photo.jpg"
+        session = FakeSession({"https://example.com/photo.jpg": library_asset(b"\xff\xd8live", "image/jpeg")})
+        page = ('<html><head><link rel="icon" href="/favicon.ico" type="image/png"></head>'
+                '<body><img src="' + archived + '"></body></html>')
+        meta = web.library.save(page, "https://web.archive.org/web/2026id_/https://example.com/a", "9001ft", session=session)
+        self.assertEqual(session.calls, [archived, "https://example.com/photo.jpg"])
+        self.assertEqual(meta["skipped"], [])
+        index = (self.folder(meta["id"]) / "index.html").read_text(encoding="utf-8")
+        self.assertRegex(index, r'<img src="assets/[0-9a-f]{20}\.jpg"/>')
+        # 9001ft's own tab icon isn't looked for on archive.org, and still shows.
+        self.assertEqual(index.count("/favicon.ico"), 1)
+
+    def test_size_limits(self):
+        big = {"https://example.com/big.png": library_asset(b"x" * 2048, "image/png"),
+               "https://example.com/huge.png": library_asset(b"", "image/png", headers={"Content-Length": "999999999"})}
+        with patch.object(web.library, "MAX_ASSET_BYTES", 1024):
+            meta = web.library.save('<img src="big.png"><img src="huge.png">', "https://example.com/", "browser", session=FakeSession(big))
+        self.assertEqual({s["reason"] for s in meta["skipped"]}, {"too large"})
+        with patch.object(web.library, "MAX_TOTAL_BYTES", 2000):
+            meta = web.library.save('<img src="big.png">', "https://example.com/", "browser", session=FakeSession(big))
+        self.assertEqual(meta["skipped"][0]["reason"], "the copy reached its size limit")
+        with patch.object(web.library, "MAX_TOTAL_BYTES", 10):
+            with self.assertRaises(web.library.FetchError):
+                web.library.save("<p>" + "x" * 100 + "</p>", "https://example.com/", "browser", session=FakeSession({}))
+        self.assertEqual(len(web.library.items()), 2)  # the page that was too large left nothing behind
+        self.assertEqual(sorted(os.listdir(web.library.library_dir())), sorted(m["id"] for m in web.library.items()))
+
+    def test_public_address_checks(self):
+        for ip in ("93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"):
+            self.assertTrue(web.library.is_public_address(ip), ip)
+        for ip in ("127.0.0.1", "10.1.2.3", "192.168.1.10", "172.16.0.1", "169.254.169.254", "100.64.0.1",
+                   "0.0.0.0", "::1", "fe80::1%en0", "fd00::1", "::ffff:127.0.0.1", "64:ff9b::a00:1",
+                   "2002:7f00:1::", "224.0.0.1", "not an ip", ""):
+            self.assertFalse(web.library.is_public_address(ip), ip)
+        for url in ("ftp://example.com/a", "file:///etc/passwd", "http://user:pw@example.com/", "https://intranet.example/",
+                    "http://127.0.0.1/", "http://example.com:99999/"):
+            with self.assertRaises(web.library.BlockedAddress, msg=url):
+                web.library.check_address(url)
+        web.library.check_address("https://example.com/a.png")
+
+    def test_connections_to_local_addresses_are_refused_after_connecting(self):
+        # Even if a name passed check_address and then resolved somewhere local.
+        class Base:
+            def __init__(self, peer):
+                self.sock = Mock()
+                self.sock.getpeername.return_value = (peer, 443)
+
+            def _new_conn(self):
+                return self.sock
+
+        class Connection(web.library._PublicOnly, Base):
+            pass
+
+        local = Connection("127.0.0.1")
+        with self.assertRaises(web.library.BlockedAddress):
+            local._new_conn()
+        local.sock.close.assert_called_once()
+        public = Connection("93.184.216.34")
+        self.assertIs(public._new_conn(), public.sock)
+
+    def test_session_uses_the_public_only_connections(self):
+        session = REAL_MAKE_SESSION()
+        self.assertFalse(session.trust_env)  # no proxy in between
+        for scheme, pool in (("http", web.library._PublicHTTPPool), ("https", web.library._PublicHTTPSPool)):
+            adapter = session.get_adapter(scheme + "://example.com/")
+            self.assertIsInstance(adapter, web.library.PublicOnlyAdapter)
+            self.assertIs(adapter.poolmanager.pool_classes_by_scheme[scheme], pool)
+        self.assertTrue(issubclass(web.library._PublicHTTPSPool.ConnectionCls, web.library._PublicOnly))
+
+    # --- routes ---
+
+    def test_keep_a_fetched_page_after_confirming(self):
+        page = LIBRARY_PAGE.replace('href="/static/site.css"', 'href="' + web.RELAY_TOKEN + 'https://web.archive.org/web/2026cs_/https://example.com/static/site.css"')
+        self.session.files["https://web.archive.org/web/2026cs_/https://example.com/static/site.css"] = library_asset(b"h1{}", "text/css")
+        web.page_cache[web.normalize_cache_url(URL)] = {"html": page, "timestamp": web.time.time()}
+        confirm = self.client.get("/library/save", query_string={"url": URL})
+        self.assertEqual(confirm.status_code, 200)
+        body = confirm.get_data(as_text=True)
+        self.assertIn("Keep a copy?", body)
+        self.assertIn("Ladders &amp; you", body)
+        self.assertIn('action="/library/save"', body)
+        self.assertIn("script-src 'nonce-", confirm.headers["Content-Security-Policy"])
+        # With "no-referrer", browsers would post the form with "Origin: null".
+        self.assertEqual(confirm.headers["Referrer-Policy"], "same-origin")
+        self.assertNotIn("no-referrer", body)
+        self.assertIn("SameSite=Strict", confirm.headers["Set-Cookie"])
+        self.assertIn("HttpOnly", confirm.headers["Set-Cookie"])
+        self.assertEqual(web.library.items(), [])  # asking saves nothing
+
+        response = self.client.post("/library/save", data={"url": URL, "csrf": self.csrf(confirm)})
+        self.assertEqual(response.status_code, 303)
+        item_id = response.headers["Location"].split("saved=", 1)[1]
+        self.assertRegex(item_id, r"^[0-9a-f]{24}$")
+        # The relay placeholder was turned back into the real archive.org address.
+        self.assertIn("https://web.archive.org/web/2026cs_/https://example.com/static/site.css", self.session.calls)
+        self.assertFalse(any(web.RELAY_TOKEN in call for call in self.session.calls))
+        meta = web.library.get(item_id)
+        self.assertEqual(meta["url"], URL)
+        self.assertEqual(meta["source"], "9001ft")
+
+        listing = self.client.get(response.headers["Location"]).get_data(as_text=True)
+        self.assertIn("Saved to your library.", listing)
+        self.assertIn("Ladders &amp; you", listing)
+        self.assertIn('href="/library/' + item_id + '/"', listing)
+        self.assertIn('href="/library/' + item_id + '/reader"', listing)
+        self.assertIn('href="' + URL + '"', listing)
+        self.assertIn('action="/library/' + item_id + '/delete"', listing)
+        self.assertIn("Files that couldn&#39;t be saved: 3", listing)
+
+    def test_saving_needs_this_sites_form(self):
+        web.page_cache[web.normalize_cache_url(URL)] = {"html": LIBRARY_PAGE, "timestamp": web.time.time()}
+        token = self.csrf(self.client.get("/library/save", query_string={"url": URL}))
+        attempts = [
+            ({"url": URL}, {}),
+            ({"url": URL, "csrf": "x" * 43}, {}),
+            ({"url": URL, "csrf": token}, {"Origin": "https://evil.example"}),
+            ({"url": URL, "csrf": token}, {"Origin": "null"}),  # a sandboxed page, such as a kept copy
+        ]
+        for data, headers in attempts:
+            with self.subTest(data=data, headers=headers):
+                self.assertEqual(self.client.post("/library/save", data=data, headers=headers).status_code, 403)
+        fresh = web.app.test_client()  # another site's form: no cookie
+        self.assertEqual(fresh.post("/library/save", data={"url": URL, "csrf": token}).status_code, 403)
+        self.assertEqual(web.library.items(), [])
+        self.assertEqual(self.session.calls, [])
+
+    def test_private_addresses_cannot_be_kept(self):
+        confirm = self.client.get("/library/save", query_string={"url": "http://intranet.example/wiki"})
+        with patch.object(web, "bypass_paywall") as fetch:
+            response = self.client.post("/library/save", data={"url": "http://intranet.example/wiki", "csrf": self.csrf(confirm)})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("own network", response.get_data(as_text=True))
+        fetch.assert_not_called()
+
+    def test_fetch_errors_show_on_the_confirmation_page(self):
+        confirm = self.client.get("/library/save", query_string={"url": URL})
+        with patch.object(web, "bypass_paywall", side_effect=web.UserFacingError("No copy anywhere")):
+            response = self.client.post("/library/save", data={"url": URL, "csrf": self.csrf(confirm)})
+        self.assertEqual(response.status_code, 502)
+        body = response.get_data(as_text=True)
+        self.assertIn("No copy anywhere", body)
+        self.assertIn('name="url" value="' + URL + '"', body)  # one click to try again
+        self.assertEqual(self.client.get("/library/save", query_string={"url": ""}).status_code, 400)
+
+    def test_bookmarklet_page_waits_for_confirmation(self):
+        response = self.client.post("/library/keep", data={"html": LIBRARY_PAGE, "url": URL}, headers={"Origin": "https://example.com"})
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("Keep a copy?", body)
+        self.assertIn("Ladders &amp; you", body)
+        draft = re.search(r'name="draft" value="([0-9a-f]{32})"', body).group(1)
+        self.assertEqual(web.library.items(), [])
+
+        saved = self.client.post("/library/save", data={"draft": draft, "csrf": self.csrf(response)})
+        self.assertEqual(saved.status_code, 303)
+        item = web.library.items()[0]
+        self.assertEqual(item["source"], "browser")
+        self.assertEqual(item["url"], URL)
+        self.assertIsNone(web.library.load_draft(draft))
+        again = self.client.post("/library/save", data={"draft": draft, "csrf": self.csrf(response)})
+        self.assertEqual(again.status_code, 404)
+
+    def test_bookmarklet_post_rejects_bad_input(self):
+        self.assertEqual(self.client.post("/library/keep", data={"html": LIBRARY_PAGE, "url": "file:///etc/passwd"}).status_code, 400)
+        self.assertEqual(self.client.post("/library/keep", data={"url": URL}).status_code, 400)
+        self.assertEqual(self.client.get("/library/save", query_string={"draft": "0" * 32}).status_code, 404)
+        self.assertIsNone(web.library.load_draft("../../settings"))
+
+    def test_drafts_are_capped(self):
+        tokens = [web.library.save_draft("<p>%d</p>" % n, URL) for n in range(web.library.MAX_DRAFTS + 3)]
+        waiting = [t for t in tokens if web.library.load_draft(t)]
+        self.assertLessEqual(len(waiting), web.library.MAX_DRAFTS)
+        self.assertIn(tokens[-1], waiting)
+
+    def test_keep_buttons_on_fetched_pages_and_reader_view(self):
+        web.page_cache[URL] = {"html": ARTICLE, "timestamp": web.time.time()}
+        quoted = "https%3A%2F%2Fexample.com%2Fnews%2Farticle"
+        page = self.client.get("/" + URL).get_data(as_text=True)
+        self.assertIn('id="ladder-keep-btn" href="http://localhost/library/save?url=' + quoted + '"', page)
+        reader_page = self.client.get("/reader/" + URL).get_data(as_text=True)
+        self.assertIn('href="/library/save?url=' + quoted + '"', reader_page)
+        # A page your own browser sent waits as a draft for the Keep a copy button.
+        sent = self.client.post("/reader", data={"html": READER_PAGE, "url": URL}).get_data(as_text=True)
+        draft = re.search(r'href="/library/save\?draft=([0-9a-f]{32})"', sent).group(1)
+        self.assertEqual(web.library.load_draft(draft), (READER_PAGE, URL))
+
+    def test_copies_are_served_sandboxed_and_only_their_own_files(self):
+        item_id = self.keep()
+        page = self.client.get("/library/" + item_id + "/")
+        self.assertEqual(page.status_code, 200)
+        self.assertTrue(page.content_type.startswith("text/html"))
+        self.assertEqual(page.headers["Content-Security-Policy"], web.FETCHED_PAGE_CSP)
+        self.assertNotIn("allow-same-origin", page.headers["Content-Security-Policy"])
+        self.assertEqual(page.headers["X-Content-Type-Options"], "nosniff")
+        self.assertNotIn("Access-Control-Allow-Origin", page.headers)
+        self.assertIn("very tall ladders", page.get_data(as_text=True))
+        asset = re.search(r'src="(assets/[0-9a-f]{20}\.js)"', page.get_data(as_text=True)).group(1)
+        script = self.client.get("/library/" + item_id + "/" + asset)
+        self.assertEqual(script.status_code, 200)
+        self.assertTrue(script.content_type.startswith("text/javascript"))
+        self.assertEqual(script.headers["Access-Control-Allow-Origin"], "*")
+        self.assertEqual(script.headers["Content-Security-Policy"], web.FETCHED_PAGE_CSP)
+        self.assertEqual(script.headers["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(self.client.get("/library/" + item_id).status_code, 308)
+        for path in ("meta.json", "reader.json", "assets/", "assets/../meta.json", "../" + item_id + "/meta.json",
+                     "assets/%2e%2e/meta.json", "index.html/../meta.json"):
+            with self.subTest(path=path):
+                self.assertEqual(self.client.get("/library/" + item_id + "/" + path).status_code, 404)
+        for bad_id in (item_id.upper(), item_id[:-1], "0" * 24, ".drafts"):
+            with self.subTest(bad_id=bad_id):
+                self.assertEqual(self.client.get("/library/" + bad_id + "/index.html", follow_redirects=True).status_code, 404)
+
+    def test_reader_version_of_a_copy(self):
+        item_id = self.keep()
+        response = self.client.get("/library/" + item_id + "/reader")
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("Ladders &amp; you", body)
+        self.assertIn("very tall ladders", body)
+        self.assertRegex(body, r'src="assets/[0-9a-f]{20}\.jpg"')
+        self.assertIn('href="/library/' + item_id + '/"', body)
+        self.assertNotIn('id="keep-copy"', body)
+        self.assertIn("script-src 'nonce-", response.headers["Content-Security-Policy"])
+        self.assertEqual(self.client.get("/library/" + "0" * 24 + "/reader").status_code, 404)
+
+    def test_delete_needs_this_sites_form(self):
+        item_id = self.keep()
+        listing = self.client.get("/library")
+        self.assertEqual(self.client.post("/library/" + item_id + "/delete", data={}).status_code, 403)
+        self.assertEqual(self.client.post("/library/" + item_id + "/delete", data={"csrf": self.csrf(listing)},
+                                          headers={"Origin": "null"}).status_code, 403)
+        self.assertTrue(self.folder(item_id).is_dir())
+        response = self.client.post("/library/" + item_id + "/delete", data={"csrf": self.csrf(listing)})
+        self.assertEqual(response.status_code, 303)
+        self.assertFalse(self.folder(item_id).exists())
+        self.assertIn("Deleted.", self.client.get(response.headers["Location"]).get_data(as_text=True))
+        self.assertEqual(self.client.post("/library/" + item_id + "/delete", data={"csrf": self.csrf(listing)}).status_code, 404)
+
+    def test_library_page(self):
+        response = self.client.get("/library")
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("Nothing here yet", body)
+        self.assertIn("Keep a copy in 9001ft", body)
+        self.assertIn(html_escape(web.keep_bookmarklet("http://localhost/")), body)
+        self.assertIn("http://localhost/library/keep", body)
+        csp = response.headers["Content-Security-Policy"]
+        self.assertIn("script-src 'nonce-", csp)
+        self.assertNotIn("'unsafe-inline'", csp.split("script-src", 1)[1].split(";")[0])
+        self.assertIn('href="/library"', self.client.get("/").get_data(as_text=True))
+
+    def test_readme_and_wording(self):
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+        self.assertIn(web.keep_bookmarklet("http://localhost:5013/"), readme)
+        for label, text in (("library page", web.library_page.LIBRARY_TEMPLATE),
+                            ("confirmation page", web.library_page.CONFIRM_TEMPLATE)):
+            match = PublicWordingTests.BANNED.search(text)
+            self.assertIsNone(match, label)
+
+    def test_english_locale_has_every_library_string(self):
+        english = json.loads((Path(__file__).resolve().parents[1] / "app" / "locales" / "en.json").read_text(encoding="utf-8"))
+        for key, value in web._DEFAULT_STRINGS.items():
+            if key == "keep_button" or key.startswith("library_"):
+                self.assertEqual(english.get(key), value, key)
+
+
+def html_escape(text):
+    from markupsafe import escape  # what Jinja uses
+    return str(escape(text))
 
 
 if __name__ == "__main__":

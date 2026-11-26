@@ -35,6 +35,8 @@ import reader  # noqa: E402
 import ai_settings  # noqa: E402
 import settings_page  # noqa: E402
 import tidy  # noqa: E402
+import library  # noqa: E402
+import library_page  # noqa: E402
 
 app = flask.Flask(__name__)
 # The Send to Reader bookmarklet posts a whole page; Werkzeug's default limit
@@ -107,6 +109,49 @@ _DEFAULT_STRINGS = {
         "Couldn't find the article text on this page. "
         "Try the original page instead."
     ),
+    "keep_button": "Keep a copy",
+    "library_link": "Your library",
+    "library_title": "Your library",
+    "library_lede": (
+        "Copies of pages you kept, saved on this computer with their styles, images and fonts, "
+        "so they open later, even without an internet connection."
+    ),
+    "library_empty": (
+        "Nothing here yet. Press \U0001F4CC Keep a copy on a page 9001ft opened, or use the "
+        "bookmarklet below on any page open in your own browser."
+    ),
+    "library_add_label": "Keep a copy of a link",
+    "library_saved": "Saved to your library.",
+    "library_saved_skipped": "Some of its files ({count}) couldn't be saved, so the copy may look a little different.",
+    "library_deleted": "Deleted.",
+    "library_saved_on": "Saved {date}",
+    "library_open": "Open copy",
+    "library_reader": "Reader version",
+    "library_live": "Live page",
+    "library_delete": "Delete",
+    "library_delete_confirm": "Delete your copy of \u201c{title}\u201d? This can't be undone.",
+    "library_delete_yes": "Yes, delete it",
+    "library_skipped": "Files that couldn't be saved: {count}",
+    "library_bookmarklet_heading": "Keep pages from your own browser",
+    "library_bookmarklet_label": "Keep a copy in 9001ft",
+    "library_bookmarklet_hint": (
+        "Drag this button to your bookmarks bar (Ctrl+Shift+B shows the bar, or \u2318+Shift+B on a Mac). "
+        "Then, on any page open in your browser, including ones you're signed in to, click it to keep "
+        "a copy here exactly as you see it."
+    ),
+    "library_bookmarklet_click": "Drag the button to your bookmarks bar rather than clicking it here.",
+    "library_confirm_title": "Keep a copy?",
+    "library_confirm_text": (
+        "9001ft will save this page on this computer with its styles, images, fonts and scripts, "
+        "so you can read it later, even offline. Big pages can take a minute."
+    ),
+    "library_confirm_browser": "This is the page as your browser sent it.",
+    "library_saving": "Saving\u2026 this can take a minute.",
+    "library_cancel": "Cancel",
+    "library_error_expired": "This page has expired. Go back, reload it and try again.",
+    "library_error_draft": "That page is no longer waiting to be kept. Send it again.",
+    "library_error_private": "Pages on your own network can't be kept.",
+    "library_error_failed": "Couldn't keep this page: {reason}.",
 }
 
 
@@ -533,6 +578,7 @@ html = """
         <div class="bookmarklet">
             <a class="bookmarklet-link" href="{{ reader_bookmarklet }}" onclick="return false;"><span aria-hidden="true">&#128214;</span>&nbsp; {{ bookmarklet_label }}</a>
             <p>{{ bookmarklet_hint }}</p>
+            <p><a class="settings-link" href="/library">&#128218; {{ library_link }}</a></p>
             <p><a class="settings-link" href="/settings">&#9881;&#65039; {{ settings_link }}</a></p>
         </div>
     </div>
@@ -1332,13 +1378,22 @@ def status_stream():
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 
-# Floating button on article pages. The page carries a <base> tag pointing at
-# the original site, so the link must be absolute to reach this server.
-READER_BUTTON = (
-    '<a id="ladder-reader-btn" href="{href}" style="all:initial;position:fixed;right:16px;bottom:16px;'
-    "z-index:2147483647;background:#1f2937;color:#fff;cursor:pointer;text-decoration:none;"
+# Floating buttons on article pages. The page carries a <base> tag pointing at
+# the original site, so the links must be absolute to reach this server. The
+# page is sandboxed (see FETCHED_PAGE_CSP), so both are plain links to this
+# server's own pages: Reader view, and the "Keep a copy?" confirmation.
+_FLOATING_LINK_STYLE = (
+    "all:initial;color:#fff;cursor:pointer;text-decoration:none;"
     "font:600 14px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:11px 15px;"
-    'border-radius:999px;box-shadow:0 4px 14px rgba(0,0,0,.28)">&#128214; {label}</a>'
+    "border-radius:999px;box-shadow:0 4px 14px rgba(0,0,0,.28);"
+)
+READER_BUTTON = (
+    '<div id="ladder-buttons" style="all:initial;position:fixed;right:16px;bottom:16px;z-index:2147483647;'
+    'display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">'
+    '<a id="ladder-keep-btn" href="{keep_href}" style="' + _FLOATING_LINK_STYLE + 'background:#9b4dca">'
+    '&#128204; {keep_label}</a>'
+    '<a id="ladder-reader-btn" href="{href}" style="' + _FLOATING_LINK_STYLE + 'background:#1f2937">'
+    '&#128214; {label}</a></div>'
 )
 
 
@@ -1349,7 +1404,10 @@ def finalize_page(page_html, url, strings):
     the page (see FETCHED_PAGE_CSP)."""
     page_html = page_html.replace(RELAY_TOKEN, request.host_url + "_relay/")
     href = request.host_url + "reader/" + url
-    button = READER_BUTTON.format(href=html_lib.escape(href, quote=True), label=html_lib.escape(strings["reader_button"]))
+    keep_href = request.host_url + "library/save?url=" + quote(url, safe="")
+    button = READER_BUTTON.format(
+        href=html_lib.escape(href, quote=True), label=html_lib.escape(strings["reader_button"]),
+        keep_href=html_lib.escape(keep_href, quote=True), keep_label=html_lib.escape(strings["keep_button"]))
     end = page_html.lower().rfind("</body>")
     page_html = page_html + button if end == -1 else page_html[:end] + button + page_html[end:]
     response = Response(page_html, mimetype="text/html")
@@ -1414,6 +1472,233 @@ def relay(path):
     response.headers["X-Content-Type-Options"] = "nosniff"
     # Nothing relayed is meant to be opened as a page; if it is, it can't run.
     response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+    return response
+
+
+# --- Library: keep copies of pages to read later, offline (see library.py) ---
+#
+# Saving and deleting change things, so they need a POST from one of this
+# server's own pages: the form carries a token that the page also set in a
+# SameSite=Strict cookie, which other sites can't send, and the Origin must be
+# this server. Pages from other sites (the bookmarklet, the sandboxed article
+# pages) only ever reach the "Keep a copy?" confirmation. Kept copies are
+# served with FETCHED_PAGE_CSP, so their scripts run sandboxed too.
+
+LIBRARY_CSRF_COOKIE = "ladder_library_csrf"
+LIBRARY_CSRF_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+
+# Like the Send to Reader bookmarklet, but keeps the whole page: styles,
+# scripts and links. Styles that scripts added straight into the browser
+# (empty <style> tags) are written out so they come along too.
+KEEP_BOOKMARKLET = (
+    "javascript:(function(){"
+    "var d=document.documentElement.cloneNode(true),s=document.querySelectorAll('style'),c=d.querySelectorAll('style');"
+    "for(var i=0;i<s.length&&i<c.length;i++){if(!c[i].textContent.trim()){try{"
+    "c[i].textContent=Array.prototype.map.call(s[i].sheet.cssRules,function(r){return r.cssText;}).join(' ');"
+    "}catch(e){}}}"
+    "var t=document.doctype?'<!DOCTYPE '+document.doctype.name+'>':'';"
+    "var f=document.createElement('form');"
+    "f.method='post';f.action='{action}';f.target='_blank';"
+    "f.enctype='multipart/form-data';f.acceptCharset='UTF-8';f.style.display='none';"
+    "[['html',t+d.outerHTML],['url',location.href]].forEach(function(p){"
+    "var e=document.createElement('textarea');e.name=p[0];e.value=p[1];f.appendChild(e);});"
+    "document.body.appendChild(f);f.submit();f.remove();"
+    "})();"
+)
+
+
+def keep_bookmarklet(host_url):
+    return KEEP_BOOKMARKLET.replace("{action}", host_url.rstrip("/") + "/library/keep")
+
+
+def keep_copy_href(page_html, url, original_href):
+    """Where Reader view's Keep a copy button goes: the confirmation for a page
+    this server fetched, or for the page the person's own browser sent, which
+    waits as a draft until they confirm."""
+    if original_href:
+        return "/library/save?url=" + quote(url, safe="")
+    try:
+        return "/library/save?draft=" + library.save_draft(page_html, url)
+    except OSError:
+        return None
+
+
+def normalize_keep_url(raw):
+    raw = (raw or "").strip()
+    if raw and not re.match(r"^https?://", raw, re.I):
+        raw = "https://" + raw.lstrip("/")
+    return raw if raw and urlparse(raw).hostname else ""
+
+
+def library_post_problem(strings):
+    """Why a request that changes the library is refused, or None."""
+    origin = request.headers.get("Origin")
+    if origin is not None and urlparse(origin).netloc != request.host:
+        return "not allowed from another site"
+    cookie = request.cookies.get(LIBRARY_CSRF_COOKIE, "")
+    if not LIBRARY_CSRF_RE.match(cookie) or not secrets.compare_digest(cookie, request.form.get("csrf", "")):
+        return strings["library_error_expired"]
+    return None
+
+
+def render_library_template(template, strings, status=200, **values):
+    nonce = secrets.token_urlsafe(16)
+    csrf = request.cookies.get(LIBRARY_CSRF_COOKIE, "")
+    if not LIBRARY_CSRF_RE.match(csrf):
+        csrf = secrets.token_urlsafe(32)
+    context = dict(strings)
+    context.update(values, nonce=nonce, csrf=csrf)
+    response = Response(flask.render_template_string(template, **context), status=status, mimetype="text/html")
+    response.headers["Content-Security-Policy"] = library_page.content_security_policy(nonce)
+    response.headers["Cache-Control"] = "no-store"
+    # Not "no-referrer": with it, browsers send "Origin: null" on form posts,
+    # which library_post_problem() rightly refuses.
+    response.headers["Referrer-Policy"] = "same-origin"
+    response.set_cookie(LIBRARY_CSRF_COOKIE, csrf, httponly=True, samesite="Strict", path="/library")
+    return response
+
+
+def render_library(strings, status=200, error=None):
+    items = []
+    for meta in library.items():
+        item = dict(meta)
+        item["date"] = library.human_date(meta.get("saved_at"))
+        item["size_text"] = library.human_size(meta.get("size"))
+        if not re.match(r"^https?://", str(item.get("url", "")), re.I):
+            item["url"] = ""
+        items.append(item)
+    saved = library.get(request.args.get("saved", "")) if not error else None
+    return render_library_template(
+        library_page.LIBRARY_TEMPLATE, strings, status=status, items=items, saved=saved, error=error,
+        deleted=request.args.get("deleted") == "1" and not error, keep_bookmarklet=keep_bookmarklet(request.host_url))
+
+
+def render_keep_confirmation(strings, status=200, error=None, url="", title="", draft=""):
+    return render_library_template(
+        library_page.CONFIRM_TEMPLATE, strings, status=status, error=error,
+        url=url, title=title, draft=draft, cancel_href="/library")
+
+
+@app.route("/library", methods=["GET"])
+def library_view():
+    return render_library(load_strings())
+
+
+@app.route("/library/save", methods=["GET"])
+def library_confirm():
+    """The "Keep a copy?" page, for a link (?url=) or a page your browser sent (?draft=)."""
+    strings = load_strings()
+    draft = request.args.get("draft", "")
+    if draft:
+        loaded = library.load_draft(draft)
+        if not loaded:
+            return render_keep_confirmation(strings, 404, strings["library_error_draft"])
+        return render_keep_confirmation(strings, url=loaded[1], title=library.page_title(loaded[0]), draft=draft)
+    url = normalize_keep_url(request.args.get("url"))
+    if not url:
+        return render_keep_confirmation(strings, 400, strings["invalid_url"])
+    with page_cache_lock:
+        cached = page_cache.get(normalize_cache_url(url))
+    return render_keep_confirmation(strings, url=url, title=library.page_title(cached["html"]) if cached else "")
+
+
+@app.route("/library/save", methods=["POST"])
+def library_save():
+    strings = load_strings()
+    draft = request.form.get("draft", "")
+    url = normalize_keep_url(request.form.get("url"))
+    loaded = library.load_draft(draft) if draft else None
+
+    def failed(status, message):
+        if loaded:
+            return render_keep_confirmation(strings, status, message, loaded[1], library.page_title(loaded[0]), draft)
+        return render_keep_confirmation(strings, status, message, "" if draft else url)
+
+    problem = library_post_problem(strings)
+    if problem:
+        return failed(403, problem)
+    if draft and not loaded:
+        return failed(404, strings["library_error_draft"])
+    if not loaded and not url:
+        return failed(400, strings["invalid_url"])
+    try:
+        if loaded:
+            meta = library.save(loaded[0], loaded[1], "browser")
+            library.drop_draft(draft)
+        else:
+            library.check_address(url)
+            page_html = get_page(url, strings).replace(RELAY_TOKEN, "")
+            meta = library.save(page_html, url, "9001ft")
+    except library.BlockedAddress:
+        return failed(400, strings["library_error_private"])
+    except library.FetchError as error:
+        return failed(502, strings["library_error_failed"].replace("{reason}", str(error)))
+    except requests.exceptions.Timeout:
+        return failed(502, strings["timeout_error"])
+    except requests.exceptions.ConnectionError:
+        return failed(502, strings["connection_error"])
+    except requests.exceptions.RequestException:
+        return failed(502, strings["request_error"])
+    except UserFacingError as error:
+        return failed(502, error.user_message)
+    except Exception:
+        return failed(500, strings["unexpected_error"])
+    return flask.redirect("/library?saved=" + meta["id"], code=303)
+
+
+@app.route("/library/keep", methods=["POST"])
+def library_keep_from_browser():
+    """Receives the Keep a copy bookmarklet's post from another site. It only
+    holds the page as a draft and asks; nothing is kept until you confirm."""
+    strings = load_strings()
+    page_html = request.form.get("html", "")
+    url = request.form.get("url", "").strip()
+    if not page_html or not re.match(r"^https?://", url, re.I):
+        return strings["invalid_url"], 400
+    draft = library.save_draft(page_html, url)
+    return render_keep_confirmation(strings, url=url, title=library.page_title(page_html), draft=draft)
+
+
+@app.route("/library/<item_id>/delete", methods=["POST"])
+def library_delete(item_id):
+    strings = load_strings()
+    problem = library_post_problem(strings)
+    if problem:
+        return render_library(strings, 403, problem)
+    if not library.delete(item_id):
+        return "", 404
+    return flask.redirect("/library?deleted=1", code=303)
+
+
+@app.route("/library/<item_id>/reader", methods=["GET"])
+def library_reader(item_id):
+    """The Reader version saved with a copy; works offline."""
+    meta = library.get(item_id)
+    saved = library.reader_article(item_id)
+    if not meta or saved is None:
+        return "", 404
+    article = {key: saved.get(key) or "" for key in ("title", "site", "author", "published", "lead_image", "content")}
+    article["minutes"] = saved.get("minutes") or 0
+    return render_reader("", meta.get("url", ""), "/library/" + item_id + "/", load_strings(), article=article)
+
+
+@app.route("/library/<item_id>/", defaults={"name": "index.html"}, methods=["GET"])
+@app.route("/library/<item_id>/<path:name>", methods=["GET"])
+def library_file(item_id, name):
+    """A kept copy and its files, sandboxed like fetched pages: its scripts
+    can't reach this server's settings or other copies."""
+    found = library.item_file(item_id, name)
+    if not found:
+        return "", 404
+    path, content_type = found
+    response = flask.send_file(path, mimetype=content_type, max_age=0)
+    response.headers["Content-Security-Policy"] = FETCHED_PAGE_CSP
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    if name != "index.html":
+        # The sandboxed page has an opaque origin, so its fonts (and module
+        # scripts) are cross-origin requests that need this header.
+        response.headers["Access-Control-Allow-Origin"] = "*"
     return response
 
 
@@ -1577,9 +1862,10 @@ def reader_tidy():
     return flask.jsonify(result)
 
 
-def render_reader(page_html, url, original_href, strings):
+def render_reader(page_html, url, original_href, strings, article=None):
+    kept = article is not None  # the Reader version of a library copy
     try:
-        article = reader.extract_article(page_html, url)
+        article = article if kept else reader.extract_article(page_html, url)
     except Exception:
         article = {"title": url, "site": "", "author": "", "published": "",
                    "minutes": 0, "lead_image": "", "content": ""}
@@ -1592,6 +1878,7 @@ def render_reader(page_html, url, original_href, strings):
         original_href=original_href,
         nonce=nonce,
         tidy_enabled=tidy.enabled(),
+        keep_href=None if kept else keep_copy_href(page_html, url, original_href),
         tidy_strings={key[len("tidy_"):]: value for key, value in strings.items() if key.startswith("tidy_")},
         **strings,
     )
