@@ -452,9 +452,9 @@ class TidyRouteTests(unittest.TestCase):
 
 
 def clear_saved_settings():
-    path = web.ai_settings.settings_path()
-    if os.path.exists(path):
-        os.remove(path)
+    for path in (web.ai_settings.settings_path(), web.ai_settings.history_path()):
+        if os.path.exists(path):
+            os.remove(path)
 
 
 class AISettingsTests(unittest.TestCase):
@@ -2163,6 +2163,157 @@ class TidyModeTests(unittest.TestCase):
         self.assertEqual(s.tidy_mode(), "off")
         s.save(s.merge_draft({"mode": "off"}))
         self.assertEqual(s.tidy_mode(), "off", "a draft without tidy_mode keeps the saved one")
+
+
+class SettingsSafetyTests(unittest.TestCase):
+    """Settings can't be wiped by accident: keys need an explicit removal, and every save can be undone."""
+
+    ROUTER_ENV = {"TIDY_API_BASE": "http://router.test/v1", "TIDY_MODEL": "general", "TIDY_API_KEY_FILE": "/no/such/key-file"}
+
+    def setUp(self):
+        env = patch.dict(os.environ, no_tidy_env(), clear=True)
+        env.start()
+        self.addCleanup(env.stop)
+        clear_saved_settings()
+        self.addCleanup(clear_saved_settings)
+        self.network = patch.object(web.requests.sessions.Session, "request", side_effect=AssertionError("Unexpected network access"))
+        self.network.start()
+        self.addCleanup(self.network.stop)
+        self.client = web.app.test_client()
+        self.s = web.ai_settings
+
+    def save_from_page(self, draft):
+        response = self.client.post("/settings/ai", json=draft)
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        return response.get_json()
+
+    def test_blank_or_missing_key_never_removes_it(self):
+        self.s.save(self.s.merge_draft({"mode": "byok", "provider": "openai", "key": "sk-keep-5678"}))
+        for draft in ({"key": ""}, {"key": "   "}, {}, {"key": None}, {"clear_key": False}):
+            with self.subTest(draft=draft):
+                merged = self.s.merge_draft({"mode": "byok", "provider": "openai", **draft})
+                self.assertEqual(merged["keys"]["openai"], {"key": "sk-keep-5678"})
+
+    def test_removing_a_key_needs_the_explicit_flag(self):
+        self.s.save(self.s.merge_draft({"mode": "byok", "provider": "openai", "key": "sk-keep-5678"}))
+        for flag in ("true", "yes", 1, [1], {"x": 1}):
+            with self.subTest(flag=flag):
+                merged = self.s.merge_draft({"mode": "byok", "provider": "openai", "clear_key": flag})
+                self.assertIn("openai", merged["keys"])
+        merged = self.s.merge_draft({"mode": "byok", "provider": "openai", "clear_key": True})
+        self.assertNotIn("openai", merged["keys"])
+        # Removal only touches the chosen provider's key.
+        self.s.save(self.s.merge_draft({"mode": "byok", "provider": "groq", "key": "gsk_other"}))
+        merged = self.s.merge_draft({"mode": "byok", "provider": "groq", "clear_key": True})
+        self.assertEqual(merged["keys"], {"openai": {"key": "sk-keep-5678"}})
+
+    def test_history_is_private_capped_and_undo_walks_back(self):
+        for n in range(7):
+            self.save_from_page({"mode": "byok", "provider": "openai", "key": f"sk-version-{n}000", "model": f"m{n}"})
+        self.assertEqual(stat.S_IMODE(os.stat(self.s.history_path()).st_mode), 0o600)
+        with open(self.s.history_path(), encoding="utf-8") as handle:
+            versions = json.load(handle)["versions"]
+        self.assertEqual(len(versions), self.s.HISTORY_SIZE)
+        self.assertEqual(versions[-1]["ai"]["models"]["openai"], "m5")
+        view = self.s.public_view()
+        self.assertEqual((view["undo"]["kind"], view["undo_count"], view["redo"]), ("settings", 5, None))
+        self.assertLess(view["undo"]["age"], 60)
+
+        response = self.client.post("/settings/ai/undo", json={})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["keys"], {"openai": "saved key ending 5000"})
+        self.assertEqual(self.s.load()["models"]["openai"], "m5")
+        self.assertEqual(response.get_json()["redo"]["kind"], "settings")
+        # Redo brings back what the undo took away, and a new save forgets the redo.
+        self.client.post("/settings/ai/undo", json={"redo": True})
+        self.assertEqual(self.s.load()["models"]["openai"], "m6")
+        self.client.post("/settings/ai/undo", json={})
+        self.save_from_page({"mode": "off"})
+        self.assertIsNone(self.s.public_view()["redo"])
+        self.assertEqual(self.client.post("/settings/ai/undo", json={"redo": True}).status_code, 409)
+
+    def test_saving_unchanged_settings_keeps_no_extra_history(self):
+        self.save_from_page({"mode": "off", "tidy_mode": "suggest"})
+        self.save_from_page({"mode": "off", "tidy_mode": "suggest"})
+        self.assertEqual(self.s.public_view()["undo_count"], 1)
+
+    def test_first_save_from_environment_can_be_undone_back_to_it(self):
+        with patch.dict(os.environ, self.ROUTER_ENV):
+            before = self.client.get("/settings/ai").get_json()
+            self.assertEqual((before["source"], before["undo"]), ("env", None))
+            view = self.save_from_page({"mode": "byok", "provider": "custom", "base_url": "http://router.test/v1",
+                                        "clear_key": True, "tidy_mode": "auto"})
+            self.assertEqual(view["source"], "settings")
+            self.assertEqual(view["keys"], {})
+            self.assertEqual(view["undo"], {"kind": "env", "age": None})
+            view = self.client.post("/settings/ai/undo", json={}).get_json()
+            self.assertFalse(os.path.exists(self.s.settings_path()), "undo deletes settings.json")
+            self.assertEqual(view["source"], "env")
+            self.assertEqual(view["keys"], {"custom": "saved key file"})
+            self.assertIsNone(view["undo"])
+            self.assertEqual(self.client.post("/settings/ai/undo", json={}).status_code, 409)
+            # Redo puts the saved copy back.
+            self.client.post("/settings/ai/undo", json={"redo": True})
+            self.assertEqual(self.s.source(), "settings")
+
+    def test_undo_without_any_settings_returns_to_off(self):
+        self.save_from_page({"mode": "local", "ollama_model": "small-model"})
+        self.assertEqual(self.s.public_view()["undo"]["kind"], "none")
+        self.client.post("/settings/ai/undo", json={})
+        self.assertIsNone(self.s.load())
+        self.assertEqual(self.s.public_view()["mode"], "off")
+
+    def test_page_never_sees_keys_even_with_history(self):
+        used = ["sk-first-secret-1111", "sk-second-secret-2222", "gsk_third_secret_3333"]
+        self.save_from_page({"mode": "byok", "provider": "openai", "key": used[0]})
+        self.save_from_page({"mode": "byok", "provider": "openai", "key": used[1]})
+        self.save_from_page({"mode": "byok", "provider": "groq", "key": used[2]})
+        self.save_from_page({"mode": "byok", "provider": "groq", "clear_key": True})
+        bodies = [json.dumps(self.s.public_view()), self.client.get("/settings/ai").get_data(as_text=True),
+                  self.client.post("/settings/ai/undo", json={}).get_data(as_text=True),
+                  self.client.post("/settings/ai/undo", json={"redo": True}).get_data(as_text=True),
+                  self.client.get("/settings").get_data(as_text=True)]
+        for body in bodies:
+            for secret in used:
+                self.assertNotIn(secret[:-4], body)
+        # The history itself keeps them, so undo can bring a key back.
+        with open(self.s.history_path(), encoding="utf-8") as handle:
+            self.assertIn(used[2], handle.read())
+
+    def test_undo_route_is_guarded(self):
+        self.save_from_page({"mode": "off"})
+        self.assertEqual(self.client.post("/settings/ai/undo", data={}).status_code, 403, "needs JSON")
+        self.assertEqual(self.client.post("/settings/ai/undo", json={}, headers={"Origin": "https://evil.example"}).status_code, 403)
+        self.assertEqual(self.client.post("/settings/ai/undo", json={}, headers={"Origin": "null"}).status_code, 403)
+        self.assertEqual(self.client.post("/settings/ai/undo", json={}, headers={"Host": "evil.example"}).status_code, 403)
+        self.assertTrue(os.path.exists(self.s.settings_path()), "refused requests change nothing")
+        self.assertEqual(self.client.post("/settings/ai/undo", json=["redo"]).status_code, 200, "odd JSON is a plain undo")
+        self.assertIsNone(self.s.load())
+
+    def test_page_has_the_explanations_and_safe_controls(self):
+        response = self.client.get("/settings")
+        body = response.get_data(as_text=True)
+        csp = response.headers["Content-Security-Policy"]
+        self.assertIn("script-src 'nonce-", csp)
+        self.assertNotIn("unsafe-inline", csp.split("script-src")[1].split(";")[0])
+        for control in ('id="replace-key"', 'id="remove-key"', 'id="remove-confirm"', "Keep it", 'id="cancel-key"',
+                        "Key will be removed when you save", 'id="discard"', "Discard changes", "Unsaved changes",
+                        "beforeunload", 'id="undo"', "Undo last save", "/settings/ai/undo", "Undo: go back to",
+                        "Key saved, from a key file", "Key saved, ending ", 'id="save" disabled', 'aria-live="polite"'):
+            self.assertIn(control, body)
+        self.assertNotIn('name="clear_key"', body, "no checkbox that deletes a key")
+        for mode in ("suggest", "auto", "off"):
+            self.assertIn(f'name="tidy_mode" value="{mode}"', body)
+        for words in ("When a page looks messy", "Offer to tidy it (recommended)", "Tidy automatically", "Only the toolbar button",
+                      "Show original", "No AI features", "Nothing leaves your computer", "speaks the OpenAI API",
+                      "LiteLLM router", "LM Studio", "only you can read", "never shown again", "asks the provider which models",
+                      "Off</b> is fastest", "Medium</b> and <b>High</b>", "only used when the first one fails",
+                      "Where Ollama listens", "2&ndash;4B", "one tiny request", "loads into memory for a few minutes"):
+            self.assertIn(words, body)
+        # Every field and option on the page carries a plain-language line.
+        self.assertGreaterEqual(body.count('class="help"'), 20)
+        PublicWordingTests().assertClean("settings page", body)
+        self.assertNotIn("/Users/", body)
 
 
 if __name__ == "__main__":

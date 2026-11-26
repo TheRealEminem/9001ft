@@ -2390,9 +2390,25 @@ def settings_ai():
         return flask.jsonify(error=problem), 403
     if request.method == "POST":
         try:
-            ai_settings.save(ai_settings.merge_draft(request.get_json(silent=True) or {}))
+            ai_settings.commit(ai_settings.merge_draft(request.get_json(silent=True) or {}))
         except ValueError as error:
             return flask.jsonify(error=str(error)), 400
+    response = flask.jsonify(ai_settings.public_view())
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.route("/settings/ai/undo", methods=["POST"])
+def settings_ai_undo():
+    """Put back the settings the last save replaced ({"redo": true}: undo the undo)."""
+    problem = local_request_problem(json_only=True)
+    if problem:
+        return flask.jsonify(error=problem), 403
+    data = request.get_json(silent=True)
+    try:
+        ai_settings.undo(redo=isinstance(data, dict) and data.get("redo") is True)
+    except ValueError as error:
+        return flask.jsonify(error=str(error)), 409
     response = flask.jsonify(ai_settings.public_view())
     response.headers["Cache-Control"] = "no-store"
     return response

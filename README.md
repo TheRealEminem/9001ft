@@ -144,10 +144,14 @@ How it stays faithful: the article is split into numbered blocks, and the model 
 Open **⚙️ AI settings** from the home page (`http://localhost:5013/settings`) and pick one:
 
 - **Off.**
-- **Local model with Ollama.** Runs on your own computer, so nothing leaves it. Pick from the models you've downloaded (sizes are shown); a small one such as `qwen3.5:4b` suits a laptop. Thinking is off by default, which is much faster.
+- **Local model.** Runs on your own computer with Ollama, so nothing leaves it. Pick from the models you've downloaded (sizes are shown); a small one such as `qwen3.5:4b` suits a laptop. Thinking is off by default, which is much faster.
 - **Your own API key.** Anthropic Claude, OpenAI, Google Gemini, OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, or any other OpenAI-compatible address (a LiteLLM router, LM Studio, …). **Load list** asks the provider which models your key can use. You can also tick **use my local model** as a fallback for when the service can't be reached.
 
-**Test AI** sends a one-word request to check the setup. Settings are saved in `data/settings.json` (git ignores it, and only your user can read it). API keys never go back to the browser. When you press Tidy up, the article's text goes to the service you chose; nothing is sent before that.
+Every option has a short explanation next to it. Under **When a page looks messy** you choose what Reader view does once an AI is set up: **offer to tidy** the page (the default), **tidy automatically** (archive copies and jumbled pages, with Show original always there), or only show the toolbar button.
+
+A saved key is shown as "✓ Key saved, ending 1234" (or "from a key file"), never in an empty box. **Replace key** opens a box for a new one; leaving it empty keeps the old key. **Remove key…** asks first, and like every other change it only happens when you press **Save**. The page tells you when there are unsaved changes, offers **Discard changes**, and asks before you leave with changes unsaved. **Undo last save** puts back the settings before your last save (it remembers the last 5); undoing the first save after using `.env.local` goes back to `.env.local`.
+
+**Test AI** sends one tiny request to check the setup. Settings are saved in `data/settings.json` and the undo history in `data/settings-history.json` (git ignores both, and only your user can read them). API keys never go back to the browser. The article's text goes to the service you chose only when you press Tidy up, or when you've chosen to tidy automatically.
 
 The settings page and AI tidy only answer at `localhost`, from 9001ft's own pages. To use them under another hostname on your own network, list it in `LADDER_ALLOWED_HOSTS` (comma-separated).
 
