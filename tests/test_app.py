@@ -303,6 +303,38 @@ class ReaderTests(unittest.TestCase):
             response = self.client.get("/reader/" + URL)
         self.assertEqual(response.status_code, 400)
 
+    def test_reader_accepts_page_from_bookmarklet(self):
+        response = self.client.post("/reader", data={"html": READER_PAGE, "url": URL})
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("How tall can a ladder get?", body)
+        # The page came from the person's own browser: no ladder "Original page" link.
+        self.assertNotIn(">Original page<", body)
+        self.assertIn("script-src 'nonce-", response.headers["Content-Security-Policy"])
+
+    def test_reader_post_handles_large_pages(self):
+        big = READER_PAGE.replace("</article>", "<p>" + "padding " * 150000 + "</p></article>")
+        self.assertGreater(len(big), 1_000_000)
+        response = self.client.post("/reader", data={"html": big, "url": URL}, content_type="multipart/form-data")
+        self.assertEqual(response.status_code, 200)
+
+    def test_reader_post_rejects_bad_input(self):
+        self.assertEqual(self.client.post("/reader", data={"html": READER_PAGE, "url": "file:///etc/passwd"}).status_code, 400)
+        self.assertEqual(self.client.post("/reader", data={"url": URL}).status_code, 400)
+
+    def test_home_page_has_banner_and_bookmarklet(self):
+        body = self.client.get("/").get_data(as_text=True)
+        self.assertIn('src="/banner.webp"', body)
+        self.assertIn("javascript:(function(){", body)
+        self.assertIn("http://localhost/reader", body)
+        banner = self.client.get("/banner.webp")
+        self.assertEqual(banner.status_code, 200)
+        self.assertEqual(banner.mimetype, "image/webp")
+
+    def test_readme_bookmarklet_matches_app(self):
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+        self.assertIn(web.reader_bookmarklet("http://localhost:5013/"), readme)
+
     def test_reader_target_url(self):
         self.assertEqual(web.reader_target_url("http://h:1/reader/https://a.com/b?c=1"), "https://a.com/b?c=1")
         self.assertEqual(web.reader_target_url("http://h:1/reader/https:/a.com/b"), "https://a.com/b")

@@ -1,9 +1,0 @@
-services:
-  9001ft:
-    container_name: 9001ft
-    hostname: 9001ft
-    build:
-      context: .
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:5013:5000"

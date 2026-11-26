@@ -1,31 +1,32 @@
+![9001ft Ladder: a grandmother carrying a lasagna climbs a huge ladder over a Subscribe wall. All this for one lasagna recipe.](assets/banner.webp)
+
 # 9001ft Ladder
 
-A self-hosted ladder over paywalls, cookie walls and clutter. When 12 feet isn't enough, and 13 isn't either.
+A small reader you run on your own computer. Paste a link and get the page back without the clutter, or as a clean Reader view. Taller than 13 feet. Considerably.
 
-9001ft Ladder is a fork of [wasi-master/13ft](https://github.com/wasi-master/13ft) (MIT). It keeps everything 13ft does and adds:
+9001ft Ladder is a fork of [wasi-master/13ft](https://github.com/wasi-master/13ft) (MIT). On top of what 13ft does, it adds:
 
-- **Reader view.** One click turns any fetched page into a clean, distraction-free article: title, author, date, reading time, body text and images, with light, dark and sepia themes and adjustable text size. Nothing in the article's wording is changed.
-- **Working archive.org pages.** When a page comes from the Wayback Machine, its stylesheets, images and scripts now load from the archived copies, so the page keeps its look (upstream 13ft showed these unstyled with broken images).
+- **Reader view.** Any page becomes a clean article: title, site, author, date, reading time, text and images, with light, dark and sepia themes and adjustable text size. The article's wording is never changed.
+- **Send to Reader bookmarklet.** Click it on any page open in your own browser, including articles you subscribe to, and that page opens in Reader view exactly as your browser had it.
+- **archive.org pages that keep their look.** Pages loaded from the Wayback Machine keep their styles and images instead of arriving as bare text.
 
-Please support the writers you read when you can. This is for the one article you want to read and move on.
+| Home | Reader view |
+|---|---|
+| ![The 9001ft home page](screenshots/home.jpg) | ![An article in Reader view](screenshots/reader.jpg) |
 
-## How does it work?
+## Use it responsibly
 
-It first asks for the page as Googlebot (Google's crawler), since many sites give Google the whole article so it can be indexed. Many large sites now check that Googlebot requests really come from Google, so when that fails it falls back to saved copies: Freedium for Medium, then archive.org, then archive.today. The status page shows each step as it happens. (Multi-source fallbacks courtesy of [@JRS1986](https://github.com/JRS1986).)
+9001ft is meant for one person, on their own computer. It listens only on `127.0.0.1` (this machine) by default. Keep it that way.
 
-Saved copies have limits. archive.today removes all JavaScript from what it saves, so animations and interactive graphics can't come back from there; archive.org keeps them, and 9001ft now loads them.
+- **Best use:** tidying up pages you can already read. That means your own subscriptions (use the Send to Reader bookmarklet) and free articles buried under clutter.
+- **Don't run it as a public website.** Anyone who can reach it can fetch any page through it, and publishers do go after public tools like this: the host of 12ft.io locked that site in July 2025 after a publisher complaint.
+- **Pay for what you read regularly.** Writers need to eat too. Sometimes it's lasagna.
 
-### Reader view
+How you use it is your responsibility. In the US, the law on getting around access controls (17 U.S.C. §1201) and on copying (§106) can apply. This README isn't legal advice.
 
-- Tick **Open in Reader view** on the home page, or
-- press the **📖 Reader view** button on any fetched page, or
-- go straight to `http://localhost:5013/reader/<article URL>`.
+## Running it
 
-## How do I use it?
-
-### Using Docker
-
-Requirements: Docker with Docker Compose (`docker compose`).
+### With Docker
 
 ```sh
 git clone https://github.com/TheRealEminem/9001ft.git
@@ -33,216 +34,71 @@ cd 9001ft
 docker compose up --build
 ```
 
-Then open <http://localhost:5013>. It listens on 127.0.0.1 only: anyone who can reach it can fetch any page through it, so don't expose it publicly without putting it behind authentication. (Port 5013 rather than 5000 because macOS AirPlay Receiver uses 5000.)
+Then open <http://localhost:5013>. Port 5013 rather than 5000, because macOS AirPlay Receiver uses 5000.
 
-### Standard Python script
+### With Python
 
-First, make sure you have [python](https://python.org) installed on your machine. Next, clone the git repo. Then go to a terminal (`Command Prompt` on Windows, `Terminal` on Mac) and run the following command:
-
-From the git cloned directory on your computer:
-
-```sh
-cd app/
-python -m pip install -r requirements.txt
-```
-
-If that doesn't work retry but replace `python` with `py`, then try `python3`, then try `py3`
-
-Then run `portable.py`, click [this link](https://realpython.com/run-python-scripts/) for a tutorial on how to run python scripts.
-
-```sh
-python portable.py
-```
-
-Or you can also run via gunicorn as follows:
-
-```sh
-python -m gunicorn 'portable:app'
-```
-
-Then open the link shown in the terminal in the browser and you'll be able to use this script
-
-On a Mac, port 5000 is taken by AirPlay Receiver, and the default binds to every network interface. To run on this machine only, on port 5013, run this from the top folder of the repo (not `app/`):
-
-```sh
-python -m gunicorn --chdir app -b 127.0.0.1:5013 --threads 4 portable:app
-```
-
-### Installation using venv and running under specific bind address / port
+Needs Python 3.9 or newer. From the top folder of the repo:
 
 ```sh
 python3 -m venv venv
-source venv/bin/activate
-python -m pip install -r requirements.txt
-FLASK_APP=app/portable.py flask run --host=127.0.0.1 --port=9982
+venv/bin/python -m pip install -r requirements.txt
+venv/bin/python -m gunicorn --chdir app -b 127.0.0.1:5013 --threads 4 portable:app
 ```
 
-## Using as a Bookmarklet in Chrome:
+Then open <http://localhost:5013>. Stop it with Ctrl+C.
 
-You can create a bookmarklet that performs the URL transformation by writing a small JavaScript snippet. Below is the JavaScript code for your bookmarklet:
+## Using it
+
+- **Paste a link** on the home page. Tick **Open in Reader view** to go straight to the clean version.
+- **Put the link after the address:** `http://localhost:5013/https://example.com/some-article` (from [@atcasanova](https://github.com/atcasanova)).
+- **Reader view directly:** `http://localhost:5013/reader/https://example.com/some-article`, or press the 📖 button on any page 9001ft fetched.
+
+### Bookmarklets
+
+Bookmarklets are bookmarks that run a little code on the page you're viewing. Drag the **📖 Send to 9001ft Reader** button from the home page to your bookmarks bar, or make bookmarks from these:
+
+**Send to Reader** sends the page your browser is showing (with your own logins and subscriptions) to Reader view. Nothing is fetched again:
 
 ```javascript
-javascript: (function () {window.location.href="http://localhost:5013/" + encodeURIComponent(window.location.href);})();
+javascript:(function(){var d=document.documentElement.cloneNode(true);d.querySelectorAll('script,style,svg,link,template').forEach(function(e){e.remove();});var f=document.createElement('form');f.method='post';f.action='http://localhost:5013/reader';f.target='_blank';f.enctype='multipart/form-data';f.acceptCharset='UTF-8';f.style.display='none';[['html','<!DOCTYPE html>'+d.outerHTML],['url',location.href]].forEach(function(p){var t=document.createElement('textarea');t.name=p[0];t.value=p[1];f.appendChild(t);});document.body.appendChild(f);f.submit();f.remove();})();
 ```
 
-You can replace http://localhost:5013/ with your own 9001ft instance if desired.
+**Open in 9001ft** opens the current address through 9001ft (from [@barakplasma](https://github.com/barakplasma)):
 
-Steps:
-
-1. Open Bookmarks Manager:
-
-2. Click on the three dots (menu) in the top-right corner of Chrome.
-   Go to Bookmarks > Bookmark manager, or simply press Ctrl+Shift+O on Windows/Linux or Cmd+Option+B on Mac.
-   Create a New Bookmark:
-
-3. In the Bookmark Manager, click the three-dot menu in the top-right corner of the window and select Add new bookmark.
-   Enter Bookmark Details: - Name: Enter a name for your bookmarklet, such as "9001ft-ize". This name will show as a bookmark title in the bookmarks bar - URL: Paste the JavaScript code provided above into the URL field.
-4. Click Save.
-
-Using the Bookmarklet:
-
-Navigate to the page whose URL you want to use 9001ft on.
-
-Click on the bookmarklet you saved in your bookmarks bar. The browser will redirect you to the 9001ft version of the URL using your service.
-
-To show Bookmarks in Chrome, click the icon with three horizontal bars in the top right corner to open options. 2. In options, hover over "Bookmarks" to display a second menu where you can click the "Show bookmarks bar" text to toggle the bar on or off.
-
-Instructions courtesy of [@barakplasma](https://github.com/barakplasma)
-
-## Customizing listening host and port, Systemd / Reverse-proxy example
-
-### Systemd Service
-
-```
-/lib/systemd/system/9001ft.service
+```javascript
+javascript:(function(){window.location.href="http://localhost:5013/"+encodeURIComponent(window.location.href);})();
 ```
 
-```
-[Unit]
-Description=9001ft Flask Service
-Wants=network-online.target
-After=network-online.target
+A few sites block forms from sending data to other addresses (a `form-action` security policy). On those, Send to Reader does nothing; use the second bookmarklet instead.
 
-[Service]
-Type=simple
-Restart=on-failure
-RestartSec=10
-User=www-data
-Group=www-data
-Environment=APP_PATH=/var/www/paywall-break
-Environment=FLASK_APP=app/portable.py
+## How it works
 
-ExecStart=/bin/bash -c "cd ${APP_PATH};${APP_PATH}/venv/bin/flask run --host=127.0.0.1 --port=22113"
+When you paste a link, 9001ft asks the site for the page the way Google's crawler does, since many sites give search engines the full text. Many large sites now check that such requests really come from Google, so when that fails it tries public copies: Freedium for Medium, then the Internet Archive's Wayback Machine, then archive.today. The status page shows each step. (Multi-source fallbacks from [@JRS1986](https://github.com/JRS1986).)
 
-# Make sure stderr/stdout is captured in the systemd journal.
-StandardOutput=journal
-StandardError=journal
+Public copies have limits. archive.today saves pages without any JavaScript, so animations and interactive graphics can't come back from there. archive.org keeps them, and 9001ft loads its copies of the page's styles, images and scripts. Custom fonts and some icons from archive.org still don't load, because archive.org doesn't let other sites use those files.
 
-[Install]
-WantedBy=multi-user.target
-```
+Reader view uses [readability](https://github.com/buriy/python-readability) to find the article in the page, then strips everything else: scripts, styles, event handlers and tracking. It's served with a strict Content Security Policy, so nothing from the article can run code on your machine.
 
-### Reverse Proxy
+## Languages
 
-```
-<VirtualHost *:22114>
-    ErrorLog ${APACHE_LOG_DIR}/9001ft-error.log
-    CustomLog ${APACHE_LOG_DIR}/9001ft-access.log combined
-
-    ProxyRequests Off
-
-    SSLEngine on
-    SSLCertificateFile      /etc/ssl/certs/ssl-cert-snakeoil.pem
-    SSLCertificateKeyFile /etc/ssl/private/ssl-cert-snakeoil.key
-    Header always set Strict-Transport-Security "max-age=63072000"
-    SSLProtocol             all -SSLv3 -TLSv1 -TLSv1.1
-
-    SSLHonorCipherOrder     off
-    SSLSessionTickets       off
-
-    Protocols h2 http/1.1
-
-    <Proxy *>
-        Order deny,allow
-        Allow from all
-    </Proxy>
-
-
-    ProxyPass / http://127.0.0.1:22113/
-    ProxyPassReverse / http://127.0.0.1:22113/
-
-
-</VirtualHost>
-```
-
-## Localisation
-
-The UI strings can be localised by setting the `LOCALE` environment variable before starting the app. Locale files live in `app/locales/<locale>.json`.
-
-Built-in locales:
-
-- `en` (default)
-- `de`
-- `fr`
-- `ko`
-
-Examples:
+Set `LOCALE` before starting to change the interface language: `de`, `en` (default), `es`, `eu`, `fr`, `it`, `ja`, `ko`, `pt`, `ru` or `zh`.
 
 ```sh
-# from app
-LOCALE=de python portable.py
-
-# or with gunicorn
-LOCALE=fr python -m gunicorn 'portable:app'
+LOCALE=de venv/bin/python -m gunicorn --chdir app -b 127.0.0.1:5013 portable:app
 ```
 
-To add a new locale, copy `app/locales/en.json` to a new file such as `app/locales/es.json` and translate the values.
+To add a language, copy `app/locales/en.json` to `app/locales/<code>.json` and translate the values. Keys you leave out fall back to English.
 
-## Screenshots
-
-### Step 1
-
-![step 1 screenshot](screenshots/step-1.png)
-Go to the website at the url shown in the console
-
-### Step 2
-
-![step 2 screenshot](screenshots/step-2.png)
-Click on the input box
-
-### Step 3
-
-![step 3 screenshot](screenshots/step-3.png)
-Paste your desired url
-
-### Step 4
-
-![step 4 screenshot](screenshots/step-4.gif)
-Voilà you now have bypassed the paywall and ads
-
-### Alternative method
-
-You can also append the url at the end of the link and it will also work. (e.g if your server is running at `http://127.0.0.1:5013` then you can go to `http://127.0.0.1:5013/https://example.com` and it will read out the contents of `https://example.com`)
-
-This feature was implemented by [@atcasanova](https://github.com/atcasanova)
-
-### Logo attribution
-
-Logo courtesy of [@mcmikemn](https://github.com/mcmikemn)
-
-## Automated tests
-
-From the repository root, install the application dependencies and run:
+## Tests
 
 ```sh
-python -m pip install -r requirements.txt
-python -m unittest discover -s tests -v
+venv/bin/python -m pip install pytest
+venv/bin/python -m pytest -q
 ```
 
-The suite uses Python's standard-library `unittest` and Flask's test client.
-External HTTP calls are mocked; the tests do not contact article sites or archive services.
-Coverage includes routes, error responses, localization, HTML processing, cache expiry,
-archive fallbacks, and server-sent progress events. This does not validate live third-party availability.
+The tests run offline: Flask's test client stands in for the browser, and every outside request is mocked. They cover the routes, error handling, languages, HTML processing, archive.org rewriting, Reader view extraction and sanitizing, the bookmarklet endpoint, caching, archive fallbacks and the progress stream. GitHub Actions runs them on every push and pull request (`.github/workflows/test.yml`).
 
-The GitHub Actions build workflow (`.github/workflows/build.yaml`) runs the suite with pytest on every push
-and pull request, before the Docker image is built. A test failure stops the workflow before anything is pushed.
+## Credits
+
+9001ft Ladder is built on [13ft](https://github.com/wasi-master/13ft) by Arian Mollik Wasi and its contributors, under the MIT license. 13ft logo by [@mcmikemn](https://github.com/mcmikemn).

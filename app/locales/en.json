@@ -1,6 +1,6 @@
 {
   "heading": "Enter Website Link",
-  "label": "Link of the website you want to remove paywall for:",
+  "label": "Link to the page you want to read:",
   "submit": "Submit",
   "toggle_dark_mode": "Toggle Dark Mode",
   "status_heading": "Fetching Article",
@@ -23,5 +23,16 @@
   "timeout_error": "The website took too long to respond (30s timeout). Try again later.",
   "connection_error": "Could not connect to the website. Check the URL and try again.",
   "request_error": "Failed to fetch the page.",
-  "unexpected_error": "Unexpected error while fetching the page."
+  "unexpected_error": "Unexpected error while fetching the page.",
+  "reader_checkbox": "Open in Reader view",
+  "reader_button": "Reader view",
+  "reader_original": "Original page",
+  "reader_source": "Source",
+  "reader_minutes": "{minutes} min read",
+  "reader_smaller": "Smaller text",
+  "reader_larger": "Larger text",
+  "reader_theme": "Change theme",
+  "bookmarklet_label": "Send to 9001ft Reader",
+  "bookmarklet_hint": "Drag this to your bookmarks bar. On any article you're reading in your own browser, including ones you subscribe to, click it to open that page in Reader view.",
+  "reader_empty": "Couldn't find the article text on this page. Try the original page instead."
 }

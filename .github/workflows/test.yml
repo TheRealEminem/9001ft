@@ -1,0 +1,57 @@
+name: Tests
+
+# PR check: unit tests on the Python you run locally (3.9, macOS's built-in)
+# and the one the Docker image uses (3.13), plus a Docker build with a quick
+# launch check. Nothing is published anywhere.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'screenshots/**', 'LICENSE']
+  pull_request:
+    paths-ignore: ['**.md', 'screenshots/**', 'LICENSE']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    name: Unit tests (Python ${{ matrix.python }})
+    # Pinned: Python 3.9 has no build for newer Ubuntu images.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.9', '3.13']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: python -m pip install -r requirements.txt pytest
+      - run: python -m pytest -q
+
+  docker:
+    name: Docker image builds and starts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -t 9001ft:ci .
+      - name: Start it and load the home page
+        run: |
+          docker run -d --name ladder -p 127.0.0.1:5000:5000 9001ft:ci
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:5000/ -o /dev/null && break; sleep 1; done
+          curl -fsS http://127.0.0.1:5000/ | grep -q "9001ft Ladder"
+          curl -fsS -o /dev/null -w '%{content_type}\n' http://127.0.0.1:5000/banner.webp | grep -q image/webp
+      - name: Container logs
+        if: failure()
+        run: docker logs ladder

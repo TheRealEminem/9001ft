@@ -16,10 +16,14 @@ from bs4 import BeautifulSoup
 import reader
 
 app = flask.Flask(__name__)
+# The Send to Reader bookmarklet posts a whole page; Werkzeug's default limit
+# for a form field is 500 KB, which many article pages exceed.
+app.config["MAX_FORM_MEMORY_SIZE"] = 25 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
 
 _DEFAULT_STRINGS = {
     "heading": "Enter Website Link",
-    "label": "Link of the website you want to remove paywall for:",
+    "label": "Link to the page you want to read:",
     "submit": "Submit",
     "toggle_dark_mode": "Toggle Dark Mode",
     "status_heading": "Fetching Article",
@@ -59,6 +63,11 @@ _DEFAULT_STRINGS = {
     "reader_smaller": "Smaller text",
     "reader_larger": "Larger text",
     "reader_theme": "Change theme",
+    "bookmarklet_label": "Send to 9001ft Reader",
+    "bookmarklet_hint": (
+        "Drag this to your bookmarks bar. On any article you're reading in your own "
+        "browser, including ones you subscribe to, click it to open that page in Reader view."
+    ),
     "reader_empty": (
         "Couldn't find the article text on this page. "
         "Try the original page instead."
@@ -133,9 +142,38 @@ html = """
             display: flex;
             justify-content: center;
             align-items: center;
-            height: 90vh;
+            min-height: 100vh;
             transition: background-color 0.3s, color 0.3s;
         }
+
+        #form-view { width: 100%; max-width: 760px; padding: 56px 16px 32px; }
+
+        .banner {
+            display: block;
+            width: 100%;
+            height: auto;
+            aspect-ratio: 1983 / 793;
+            border-radius: 14px;
+            margin-bottom: 28px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+        }
+
+        #url-form { max-width: 520px; margin: 0 auto; }
+
+        .bookmarklet { max-width: 520px; margin: 28px auto 0; text-align: center; font-size: 14px; color: #555; }
+        .bookmarklet p { margin: 10px 0 0; line-height: 1.5; }
+        .bookmarklet-link {
+            display: inline-block;
+            padding: 9px 16px;
+            border: 2px dashed #9b4dca;
+            border-radius: 999px;
+            color: #9b4dca;
+            font-weight: 600;
+            text-decoration: none;
+            cursor: grab;
+        }
+        body.dark-mode .bookmarklet { color: #bbb; }
+        body.dark-mode .bookmarklet-link { color: #b9a8ff; border-color: #7359f8; }
 
         h1 {
             font-size: 1.5rem;
@@ -445,6 +483,8 @@ html = """
     </div>
 
     <div id="form-view">
+        <img class="banner" src="/banner.webp" width="1983" height="793"
+             alt="9001ft Ladder: a grandmother carrying a lasagna climbs a huge ladder over a Subscribe wall. All this for one lasagna recipe.">
         <form id="url-form">
             <h1>{{ heading }}</h1>
             <label for="link">{{ label }}</label>
@@ -454,6 +494,10 @@ html = """
             </label>
             <input type="submit" value="{{ submit }}">
         </form>
+        <div class="bookmarklet">
+            <a class="bookmarklet-link" href="{{ reader_bookmarklet }}" onclick="return false;"><span aria-hidden="true">&#128214;</span>&nbsp; {{ bookmarklet_label }}</a>
+            <p>{{ bookmarklet_hint }}</p>
+        </div>
     </div>
 
     <div id="status-view" style="display:none;">
@@ -625,6 +669,26 @@ def build_steps(strings):
     ]
 
 
+# Sends the page the person is looking at, as their browser rendered it, to the
+# Reader view. Scripts, styles and SVG are dropped first to keep the post small.
+READER_BOOKMARKLET = (
+    "javascript:(function(){"
+    "var d=document.documentElement.cloneNode(true);"
+    "d.querySelectorAll('script,style,svg,link,template').forEach(function(e){e.remove();});"
+    "var f=document.createElement('form');"
+    "f.method='post';f.action='{action}';f.target='_blank';"
+    "f.enctype='multipart/form-data';f.acceptCharset='UTF-8';f.style.display='none';"
+    "[['html','<!DOCTYPE html>'+d.outerHTML],['url',location.href]].forEach(function(p){"
+    "var t=document.createElement('textarea');t.name=p[0];t.value=p[1];f.appendChild(t);});"
+    "document.body.appendChild(f);f.submit();f.remove();"
+    "})();"
+)
+
+
+def reader_bookmarklet(host_url):
+    return READER_BOOKMARKLET.replace("{action}", host_url.rstrip("/") + "/reader")
+
+
 def render_main_page():
     strings = load_strings()
     ui_strings = {
@@ -637,6 +701,7 @@ def render_main_page():
         html,
         steps=build_steps(strings),
         ui_strings=ui_strings,
+        reader_bookmarklet=reader_bookmarklet(request.host_url),
         **strings,
     )
 
@@ -1130,6 +1195,17 @@ def favicon():
     return "", 404
 
 
+@app.route("/banner.webp")
+def banner():
+    banner_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "banner.webp")
+    if os.path.exists(banner_path):
+        with open(banner_path, "rb") as f:
+            data = f.read()
+        return Response(data, mimetype="image/webp",
+                        headers={"Cache-Control": "public, max-age=86400"})
+    return "", 404
+
+
 @app.route("/")
 def main_page():
     return render_main_page()
@@ -1244,6 +1320,22 @@ def reader_view(path):
     except Exception:
         return strings["unexpected_error"], 500
 
+    return render_reader(page_html, url, "/" + url, strings)
+
+
+@app.route("/reader", methods=["POST"])
+def reader_from_browser():
+    """Reader view for a page sent by the Send to Reader bookmarklet: the page
+    exactly as the person's own browser shows it, with their own access."""
+    strings = load_strings()
+    page_html = request.form.get("html", "")
+    url = request.form.get("url", "").strip()
+    if not page_html or not re.match(r"^https?://", url, re.I):
+        return strings["invalid_url"], 400
+    return render_reader(page_html, url, None, strings)
+
+
+def render_reader(page_html, url, original_href, strings):
     try:
         article = reader.extract_article(page_html, url)
     except Exception:
@@ -1255,7 +1347,7 @@ def reader_view(path):
         reader.READER_TEMPLATE,
         article=article,
         source_url=url,
-        original_href="/" + url,
+        original_href=original_href,
         nonce=nonce,
         **strings,
     )
