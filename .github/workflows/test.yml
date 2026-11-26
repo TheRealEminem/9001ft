@@ -52,6 +52,21 @@ jobs:
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:5000/ -o /dev/null && break; sleep 1; done
           curl -fsS http://127.0.0.1:5000/ | grep -q "9001ft Ladder"
           curl -fsS -o /dev/null -w '%{content_type}\n' http://127.0.0.1:5000/banner.webp | grep -q image/webp
+      - name: Health check answers, and the image's HEALTHCHECK command works
+        run: |
+          curl -fsS http://127.0.0.1:5000/healthz | grep -q '"ok": *true'
+          test "$(docker inspect --format '{{index .Config.Healthcheck.Test 0}}' ladder)" = CMD-SHELL
+          docker exec ladder sh -c "$(docker inspect --format '{{index .Config.Healthcheck.Test 1}}' ladder)"
+      - name: With a password, pages need a login
+        run: |
+          docker run -d --name ladder-locked -e LADDER_PASSWORD=ci-only-password -p 127.0.0.1:5001:5000 9001ft:ci
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:5001/healthz -o /dev/null && break; sleep 1; done
+          test "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' -H 'Accept: text/html' http://127.0.0.1:5001/)" = "303 http://127.0.0.1:5001/login"
+          curl -fsS http://127.0.0.1:5001/login | grep -q 'type="password"'
+          curl -fsS -c jar -d password=ci-only-password -o /dev/null http://127.0.0.1:5001/login
+          curl -fsS -b jar http://127.0.0.1:5001/ | grep -q "9001ft Ladder"
       - name: Container logs
         if: failure()
-        run: docker logs ladder
+        run: |
+          docker logs ladder
+          docker logs ladder-locked || true

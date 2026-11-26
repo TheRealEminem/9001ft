@@ -9,7 +9,7 @@ RUN adduser -D -g '' -u $UID -G thirteener thirteener
 
 # Generic labels
 LABEL maintainer="Arian Mollik Wasi <arianmollik323@gmail.com>"
-LABEL version="0.3.4"
+LABEL version="0.4.0"
 LABEL description="9001ft Ladder: a small self-hosted reader with a clean Reader view (fork of wasi-master/13ft)"
 LABEL url="https://github.com/TheRealEminem/9001ft/"
 LABEL documentation="https://github.com/TheRealEminem/9001ft/blob/main/README.md"
@@ -18,7 +18,7 @@ LABEL documentation="https://github.com/TheRealEminem/9001ft/blob/main/README.md
 LABEL org.opencontainers.image.source="https://github.com/TheRealEminem/9001ft/"
 LABEL org.opencontainers.image.authors="Arian Mollik Wasi"
 LABEL org.opencontainers.image.created="2023-10-31T22:53:00Z"
-LABEL org.opencontainers.image.version="0.3.4"
+LABEL org.opencontainers.image.version="0.4.0"
 LABEL org.opencontainers.image.url="https://github.com/TheRealEminem/9001ft/"
 LABEL org.opencontainers.image.source="https://github.com/TheRealEminem/9001ft/"
 LABEL org.opencontainers.image.description="9001ft Ladder: a small self-hosted reader with a clean Reader view (fork of wasi-master/13ft)"
@@ -34,4 +34,7 @@ RUN --mount=type=cache,mode=0755,target=/home/thirteener/.cache/pip \
 
 WORKDIR /app
 EXPOSE 5000
+# Docker (and NAS dashboards) show the container as healthy once /healthz answers.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD wget -q -T 4 -O /dev/null "http://127.0.0.1:${PORT:-5000}/healthz" || exit 1
 CMD [ "python", "-m", "gunicorn", "portable:app" ]

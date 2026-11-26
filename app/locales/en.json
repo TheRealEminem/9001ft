@@ -42,5 +42,17 @@
   "tidy_show_original": "Show original",
   "tidy_show_tidy": "Show tidied",
   "tidy_failed": "Couldn't tidy this page: {reason}.",
-  "settings_link": "AI settings (optional)"
+  "settings_link": "AI settings (optional)",
+  "app_description": "Paste a link and read the page cleanly, or in Reader view.",
+  "logout_link": "Log out",
+  "login_title": "Enter the password to continue.",
+  "login_label": "Password",
+  "login_button": "Log in",
+  "login_wrong": "That password isn't right.",
+  "login_too_many": "Too many wrong passwords. Wait a few minutes and try again.",
+  "share_no_link_title": "No link to read",
+  "share_no_link_text": "What you shared didn't include a web address. Share a page from your browser instead.",
+  "offline_title": "You're offline",
+  "offline_text": "9001ft needs a connection to fetch pages. Try again when you're back online.",
+  "back_home": "Back to 9001ft"
 }

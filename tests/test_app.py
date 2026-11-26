@@ -851,5 +851,349 @@ class ReaderTests(unittest.TestCase):
         self.assertIsNone(web.reader_target_url("http://h:1/https://a.com"))
 
 
+def png_size(data):
+    """Width and height from a PNG header, without an imaging library."""
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+
+
+class SelfHostingTests(unittest.TestCase):
+    """Health check, installable app, share target and the optional password."""
+    PASSWORD = "correct horse battery staple"
+
+    def setUp(self):
+        env = {key: value for key, value in os.environ.items()
+               if key not in ("LADDER_PASSWORD", "LADDER_SECRET_KEY", "LADDER_TRUST_PROXY", "LADDER_ALLOWED_HOSTS")}
+        env["LOCALE"] = "en"
+        patcher = patch.dict(os.environ, env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.network = patch.object(web.requests.sessions.Session, "request", side_effect=AssertionError("Unexpected network access"))
+        self.network.start()
+        self.addCleanup(self.network.stop)
+        web.auth.failed_logins.clear()
+        self.addCleanup(web.auth.failed_logins.clear)
+        web.page_cache.clear()
+        self.addCleanup(web.page_cache.clear)
+        web.load_strings_for_locale.cache_clear()
+        self.client = web.app.test_client()
+
+    def with_password(self, password=None):
+        patcher = patch.dict(os.environ, {"LADDER_PASSWORD": password or self.PASSWORD})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def log_in(self, client=None, password=None):
+        return (client or self.client).post("/login", data={"password": password or self.PASSWORD})
+
+    # --- health check -------------------------------------------------------
+
+    def test_healthz(self):
+        for password in (False, True):
+            if password:
+                self.with_password()
+            response = self.client.get("/healthz")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json(), {"ok": True, "version": web.VERSION})
+            self.assertNotIn("Set-Cookie", response.headers)
+
+    # --- without a password nothing changes -------------------------------------
+
+    def test_no_password_no_login_no_cookie(self):
+        home = self.client.get("/")
+        self.assertEqual(home.status_code, 200)
+        self.assertNotIn("Set-Cookie", home.headers)
+        body = home.get_data(as_text=True)
+        self.assertNotIn('href="/logout"', body)
+        self.assertNotIn("'token'", body)
+        self.assertEqual(self.client.get("/settings").status_code, 200)
+        self.assertNotIn("Log out", self.client.get("/settings").get_data(as_text=True))
+        response = self.client.post("/reader", data={"html": READER_PAGE, "url": URL})
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("Set-Cookie", response.headers)
+        login = self.client.get("/login")
+        self.assertEqual((login.status_code, login.headers["Location"]), (303, "/"))
+        self.assertEqual(self.client.post("/login", data={"password": "x"}).status_code, 303)
+        self.assertIsNone(self.client.get_cookie("ladder_session"))
+
+    # --- with a password -----------------------------------------------------------
+
+    def test_password_protects_pages_and_apis(self):
+        self.with_password()
+        home = self.client.get("/", headers={"Accept": "text/html"})
+        self.assertEqual((home.status_code, home.headers["Location"]), (303, "/login"))
+        article = self.client.get("/https://example.com/a?b=1", headers={"Accept": "text/html"})
+        self.assertEqual(article.status_code, 303)
+        self.assertEqual(article.headers["Location"], "/login?next=/https://example.com/a%3Fb%3D1")
+        for path in ("/settings/ai", "/status?url=example.com", "/reader/https://example.com/a"):
+            with self.subTest(path=path):
+                response = self.client.get(path, headers={"Accept": "application/json"})
+                self.assertEqual(response.status_code, 401)
+        self.assertEqual(self.client.post("/settings/ai", json={"mode": "off"}).status_code, 401)
+        self.assertEqual(self.client.post("/reader/tidy", json={"html": "<p>x</p>"}).status_code, 401)
+        self.assertEqual(self.client.post("/article", data={"link": URL}).status_code, 401)
+        self.assertEqual(self.client.get("/_relay/https://web.archive.org/web/1/https://a.com/x.css").status_code, 401)
+
+    def test_catch_all_cannot_hide_under_public_paths(self):
+        self.with_password()
+        with patch.object(web, "bypass_paywall", return_value=ARTICLE) as fetch:
+            for path in ("/icons/example.com/article", "/static/../example.com/a", "/healthz/example.com/a",
+                         "/login/example.com/a", "/sw.js/example.com/a"):
+                with self.subTest(path=path):
+                    self.assertIn(self.client.get(path).status_code, (303, 401, 404))
+        fetch.assert_not_called()
+
+    def test_public_files_need_no_login(self):
+        self.with_password()
+        for path in ("/healthz", "/login", "/manifest.webmanifest", "/icons/icon-192.png", "/sw.js",
+                     "/static/app.js", "/banner.webp", "/favicon.ico", "/offline"):
+            with self.subTest(path=path):
+                response = self.client.get(path, headers={"Accept": "text/html"})
+                self.assertEqual(response.status_code, 200)
+                self.assertNotIn("Set-Cookie", response.headers)
+
+    def test_login_flow_and_cookie_flags(self):
+        self.with_password()
+        page = self.client.get("/login?next=/settings")
+        self.assertEqual(page.status_code, 200)
+        text = page.get_data(as_text=True)
+        self.assertIn('type="password"', text)
+        self.assertIn('action="/login?next=/settings"', text)
+        self.assertIn("#9b4dca", text)
+        self.assertIn("prefers-color-scheme: dark", text)
+        # no-referrer would make browsers send "Origin: null", which the login refuses.
+        self.assertNotIn('content="no-referrer"', text)
+        self.assertNotIn("unsafe-inline", page.headers["Content-Security-Policy"].split("script-src")[1].split(";")[0])
+
+        wrong = self.client.post("/login", data={"password": "nope"})
+        self.assertEqual(wrong.status_code, 401)
+        self.assertIn("That password isn&#39;t right.", wrong.get_data(as_text=True))
+        self.assertNotIn("Set-Cookie", wrong.headers)
+
+        right = self.client.post("/login?next=/settings", data={"password": self.PASSWORD})
+        self.assertEqual((right.status_code, right.headers["Location"]), (303, "/settings"))
+        cookie = right.headers["Set-Cookie"]
+        self.assertTrue(cookie.startswith("ladder_session="))
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Lax", cookie)
+        self.assertNotIn("Secure", cookie)
+
+        home = self.client.get("/")
+        self.assertEqual(home.status_code, 200)
+        self.assertIn('href="/logout"', home.get_data(as_text=True))
+        self.assertIn("Log out", self.client.get("/settings").get_data(as_text=True))
+        self.assertEqual(self.client.get("/login").status_code, 303)
+
+        out = self.client.get("/logout")
+        self.assertEqual((out.status_code, out.headers["Location"]), (303, "/login"))
+        self.assertEqual(self.client.get("/", headers={"Accept": "text/html"}).status_code, 303)
+
+    def test_secure_cookie_on_https_and_trusted_proxy_only(self):
+        self.with_password()
+        https = web.app.test_client().post("/login", base_url="https://ladder.lan", data={"password": self.PASSWORD})
+        self.assertIn("Secure", https.headers["Set-Cookie"])
+        forwarded = {"X-Forwarded-Proto": "https"}
+        untrusted = self.client.post("/login", data={"password": self.PASSWORD}, headers=forwarded)
+        self.assertNotIn("Secure", untrusted.headers["Set-Cookie"])
+        with patch.dict(os.environ, {"LADDER_TRUST_PROXY": "1"}):
+            trusted = web.app.test_client().post("/login", data={"password": self.PASSWORD}, headers=forwarded)
+        self.assertIn("Secure", trusted.headers["Set-Cookie"])
+
+    def test_failed_logins_are_limited(self):
+        self.with_password()
+        here = {"REMOTE_ADDR": "192.0.2.10"}
+        for _ in range(web.auth.FAILS_PER_ADDRESS):
+            self.assertEqual(self.client.post("/login", data={"password": "guess"}, environ_base=here).status_code, 401)
+        blocked = self.client.post("/login", data={"password": self.PASSWORD}, environ_base=here)
+        self.assertEqual(blocked.status_code, 429)
+        self.assertNotIn("Set-Cookie", blocked.headers)
+        elsewhere = self.client.post("/login", data={"password": self.PASSWORD}, environ_base={"REMOTE_ADDR": "192.0.2.11"})
+        self.assertEqual(elsewhere.status_code, 303)
+
+    def test_login_refuses_other_sites(self):
+        self.with_password()
+        response = self.client.post("/login", data={"password": self.PASSWORD}, headers={"Origin": "https://evil.example"})
+        self.assertEqual(response.status_code, 403)
+        self.assertNotIn("Set-Cookie", response.headers)
+
+    def test_next_must_stay_on_this_server(self):
+        for value in ("//evil.example", "/\\evil.example", "https://evil.example", "", None, "/a\nb"):
+            self.assertEqual(web.auth.safe_next(value), "/")
+        self.assertEqual(web.auth.safe_next("/https://example.com/a"), "/https://example.com/a")
+        self.with_password()
+        response = self.client.post("/login?next=//evil.example", data={"password": self.PASSWORD})
+        self.assertEqual(response.headers["Location"], "/")
+
+    def test_changing_the_password_logs_out(self):
+        self.with_password()
+        self.log_in()
+        self.assertEqual(self.client.get("/").status_code, 200)
+        self.with_password("a different password")
+        self.assertEqual(self.client.get("/", headers={"Accept": "text/html"}).status_code, 303)
+
+    def test_settings_stay_local_only_after_login(self):
+        self.with_password()
+        self.log_in()
+        self.assertEqual(self.client.get("/settings").status_code, 200)
+        lan = web.app.test_client()
+        self.assertEqual(lan.post("/login", base_url="http://ladder.lan", data={"password": self.PASSWORD}).status_code, 303)
+        self.assertEqual(lan.get("/", base_url="http://ladder.lan").status_code, 200)
+        self.assertEqual(lan.get("/settings", base_url="http://ladder.lan").status_code, 403)
+        with patch.dict(os.environ, {"LADDER_ALLOWED_HOSTS": "ladder.lan"}):
+            self.assertEqual(lan.get("/settings", base_url="http://ladder.lan").status_code, 200)
+
+    # --- the bookmarklet with a password -----------------------------------------
+
+    def test_bookmarklet_token(self):
+        self.with_password()
+        token = web.auth.bookmarklet_token()
+        self.assertRegex(token, r"^[0-9a-f]{40}$")
+        self.log_in()
+        home = self.client.get("/").get_data(as_text=True)
+        self.assertIn("[&#39;url&#39;,location.href],[&#39;token&#39;,&#39;%s&#39;]]" % token, home)
+
+        stranger = web.app.test_client()  # another site's page: no login cookie
+        form = {"html": READER_PAGE, "url": URL}
+        missing = stranger.post("/reader", data=form)
+        self.assertEqual((missing.status_code, missing.headers["Location"]), (303, "/login"))
+        self.assertEqual(stranger.post("/reader", data={**form, "token": "0" * 40}).status_code, 303)
+        accepted = stranger.post("/reader", data={**form, "token": token}, content_type="multipart/form-data")
+        self.assertEqual(accepted.status_code, 200)
+        self.assertIn("How tall can a ladder get?", accepted.get_data(as_text=True))
+        self.assertNotIn("Set-Cookie", accepted.headers)
+
+        # Only POST /reader takes it.
+        self.assertEqual(stranger.get("/?token=" + token, headers={"Accept": "text/html"}).status_code, 303)
+        self.assertEqual(stranger.post("/article", data={"link": URL, "token": token}).status_code, 401)
+        self.assertEqual(stranger.post("/reader/tidy", data={"token": token}).status_code, 401)
+
+        # A new password retires old bookmarklets.
+        self.with_password("a different password")
+        self.assertNotEqual(web.auth.bookmarklet_token(), token)
+        self.assertEqual(stranger.post("/reader", data={**form, "token": token}).status_code, 303)
+
+    def test_no_token_without_password(self):
+        self.assertIsNone(web.auth.bookmarklet_token())
+        self.assertEqual(web.reader_bookmarklet("http://localhost/", None), web.reader_bookmarklet("http://localhost/"))
+
+    # --- the signing key ---------------------------------------------------------
+
+    def test_secret_key_saved_privately_once(self):
+        folder = tempfile.mkdtemp(prefix="9001ft-key-")
+        with patch.dict(os.environ, {"LADDER_DATA_DIR": folder}):
+            first = web.auth.secret_key()
+            path = os.path.join(folder, web.auth.SECRET_FILE)
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+            web.auth._key_cache.clear()
+            self.assertEqual(web.auth.secret_key(), first)
+            with patch.dict(os.environ, {"LADDER_SECRET_KEY": "from-the-environment"}):
+                self.assertEqual(web.auth.secret_key(), "from-the-environment")
+        self.assertGreaterEqual(len(first), 32)
+
+    # --- installable app ---------------------------------------------------------
+
+    def test_manifest(self):
+        response = self.client.get("/manifest.webmanifest")
+        self.assertEqual(response.mimetype, "application/manifest+json")
+        manifest = json.loads(response.get_data(as_text=True))
+        self.assertEqual(manifest["name"], "9001ft Ladder")
+        self.assertEqual(manifest["short_name"], "9001ft")
+        self.assertEqual((manifest["start_url"], manifest["display"]), ("/", "standalone"))
+        self.assertTrue(manifest["theme_color"] and manifest["background_color"])
+        self.assertEqual(manifest["share_target"], {
+            "action": "/share", "method": "GET", "params": {"title": "title", "text": "text", "url": "url"}})
+        purposes = set()
+        for icon in manifest["icons"]:
+            purposes.add(icon["purpose"])
+            image = self.client.get(icon["src"])
+            self.assertEqual(image.status_code, 200)
+            self.assertEqual(image.mimetype, "image/png")
+            self.assertEqual("%dx%d" % png_size(image.data), icon["sizes"])
+        self.assertEqual(purposes, {"any", "maskable"})
+        self.assertIn("512x512", {icon["sizes"] for icon in manifest["icons"]})
+        self.assertEqual(png_size(self.client.get("/icons/apple-touch-icon.png").data), (180, 180))
+        self.assertEqual(self.client.get("/icons/nope.png").status_code, 404)
+
+    def test_service_worker(self):
+        response = self.client.get("/sw.js")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "text/javascript")
+        self.assertEqual(response.headers["Service-Worker-Allowed"], "/")
+        self.assertEqual(response.headers["Cache-Control"], "no-cache")
+        script = response.get_data(as_text=True)
+        shell = re.findall(r'"(/[^"]*)"', re.search(r"const SHELL = \[(.*?)\];", script, re.S).group(1))
+        self.assertEqual(shell, web.pwa.SHELL_URLS)
+        for url in shell:
+            self.assertFalse(url == "/" or url.startswith(("/reader", "/settings", "/status", "/share", "/http")), url)
+            self.assertEqual(self.client.get(url).status_code, 200, url)
+        self.assertIn('request.method !== "GET"', script)
+        self.assertIn('register("/sw.js"', self.client.get("/static/app.js").get_data(as_text=True))
+
+    def test_pages_link_the_app_and_keep_strict_csp(self):
+        tags = ('rel="manifest" href="/manifest.webmanifest"', 'name="theme-color"',
+                'rel="apple-touch-icon"', 'src="/static/app.js"')
+        home = self.client.get("/").get_data(as_text=True)
+        reader_page = self.client.post("/reader", data={"html": READER_PAGE, "url": URL})
+        settings = self.client.get("/settings")
+        for name, body in (("home", home), ("reader", reader_page.get_data(as_text=True)),
+                           ("settings", settings.get_data(as_text=True))):
+            for tag in tags:
+                self.assertIn(tag, body, name)
+        for name, response in (("reader", reader_page), ("settings", settings)):
+            csp = response.headers["Content-Security-Policy"]
+            nonce = re.search(r"script-src 'nonce-([^']+)'", csp).group(1)
+            self.assertIn('<script src="/static/app.js" defer nonce="%s">' % nonce, response.get_data(as_text=True))
+            self.assertIn("worker-src 'self'", csp)
+            self.assertIn("manifest-src 'self'", csp)
+            self.assertEqual(csp.split("script-src")[1].split(";")[0].strip(), "'nonce-%s'" % nonce, name)
+            self.assertIn("default-src 'none'", csp)
+
+    def test_offline_page(self):
+        response = self.client.get("/offline")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("You&#39;re offline", response.get_data(as_text=True))
+        self.assertIn("script-src 'nonce-", response.headers["Content-Security-Policy"])
+
+    # --- share target ------------------------------------------------------------
+
+    def test_share_finds_the_link(self):
+        cases = [
+            ({"url": "https://example.com/a?b=1"}, "/reader/https://example.com/a?b=1"),
+            ({"title": "A story", "text": "Read this: https://example.com/story. So good!"}, "/reader/https://example.com/story"),
+            ({"text": "(see http://example.com/x)"}, "/reader/http://example.com/x"),
+            ({"text": "https://en.wikipedia.org/wiki/Ladder_(disambiguation)"},
+             "/reader/https://en.wikipedia.org/wiki/Ladder_(disambiguation)"),
+            ({"url": "", "text": "look https://example.com/é"}, "/reader/https://example.com/%C3%A9"),
+        ]
+        for args, location in cases:
+            with self.subTest(args=args):
+                response = self.client.get("/share", query_string=args)
+                self.assertEqual(response.status_code, 303)
+                self.assertEqual(response.headers["Location"], location)
+
+    def test_share_without_a_link(self):
+        for args in ({}, {"title": "Hello", "text": "no link here"}, {"text": "javascript:alert(1)"},
+                     {"url": "ftp://example.com/file"}):
+            with self.subTest(args=args):
+                response = self.client.get("/share", query_string=args)
+                self.assertEqual(response.status_code, 200)
+                self.assertIn("No link to read", response.get_data(as_text=True))
+
+    def test_share_needs_login_with_a_password(self):
+        self.with_password()
+        response = self.client.get("/share?url=https://example.com/a", headers={"Accept": "text/html"})
+        self.assertEqual(response.status_code, 303)
+        self.assertTrue(response.headers["Location"].startswith("/login?next=/share"))
+        self.log_in()
+        self.assertEqual(self.client.get("/share?url=https://example.com/a").headers["Location"],
+                         "/reader/https://example.com/a")
+
+    def test_new_pages_use_public_wording(self):
+        sw = (PublicWordingTests.ROOT / "app" / "static" / "sw.js").read_text(encoding="utf-8")
+        for name, text in (("login page", web.auth.LOGIN_TEMPLATE), ("message page", web.pwa.MESSAGE_TEMPLATE),
+                           ("service worker", sw)):
+            self.assertIsNone(PublicWordingTests.BANNED.search(text), name)
+
+
 if __name__ == "__main__":
     unittest.main()
