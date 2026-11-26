@@ -2,10 +2,15 @@
 import json
 import os
 import re
+import stat
 import sys
+import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
+
+# Tests never touch real saved settings: each run gets its own data folder.
+os.environ["LADDER_DATA_DIR"] = tempfile.mkdtemp(prefix="9001ft-tests-")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 import portable as web
@@ -427,6 +432,201 @@ class TidyRouteTests(unittest.TestCase):
         self.assertEqual(os.environ["NEW_9001FT_SETTING"], "quoted value")
 
 
+def clear_saved_settings():
+    path = web.ai_settings.settings_path()
+    if os.path.exists(path):
+        os.remove(path)
+
+
+class AISettingsTests(unittest.TestCase):
+    def setUp(self):
+        env = patch.dict(os.environ, no_tidy_env(), clear=True)
+        env.start()
+        self.addCleanup(env.stop)
+        clear_saved_settings()
+        self.addCleanup(clear_saved_settings)
+        self.network = patch.object(web.requests.sessions.Session, "request", side_effect=AssertionError("Unexpected network access"))
+        self.network.start()
+        self.addCleanup(self.network.stop)
+
+    def test_backends_for_each_mode(self):
+        s = web.ai_settings
+        local = {"mode": "local", "ollama_url": "http://localhost:11434", "ollama_model": "qwen3.5:4b", "local_reasoning": "none"}
+        [b] = s.backends_for(local)
+        self.assertEqual((b.base, b.model, b.reasoning_effort, b.kind), ("http://localhost:11434/v1", "qwen3.5:4b", "none", "openai"))
+        claude = {"mode": "byok", "provider": "anthropic", "keys": {"anthropic": {"key": "sk-ant-test"}}, "models": {}}
+        [b] = s.backends_for(claude)
+        self.assertEqual((b.kind, b.model, b.key), ("anthropic", "claude-opus-5-5", "sk-ant-test"))
+        self.assertEqual(s.backends_for({**claude, "keys": {}}), [], "hosted providers need a key")
+        router = {"mode": "byok", "provider": "custom", "base_url": "http://router.test/v1/", "models": {"custom": "general"},
+                  "fallback_local": True, **{k: v for k, v in local.items() if k != "mode"}}
+        first, second = s.backends_for(router)
+        self.assertEqual((first.base, first.model, first.key), ("http://router.test/v1", "general", ""))
+        self.assertEqual(second.model, "qwen3.5:4b")
+        self.assertEqual(s.backends_for({"mode": "off"}), [])
+
+    def test_saved_settings_override_environment(self):
+        with patch.dict(os.environ, TIDY_ENV):
+            self.assertEqual(web.ai_settings.source(), "env")
+            self.assertTrue(web.tidy.enabled())
+            web.ai_settings.save({"mode": "off"})
+            self.assertEqual(web.ai_settings.source(), "settings")
+            self.assertFalse(web.tidy.enabled())
+
+    def test_save_is_private_and_keys_stay_hidden(self):
+        s = web.ai_settings
+        s.save(s.merge_draft({"mode": "byok", "provider": "openai", "key": "sk-secret-1234", "model": "some-model"}))
+        mode = stat.S_IMODE(os.stat(s.settings_path()).st_mode)
+        self.assertEqual(mode, 0o600)
+        view = s.public_view()
+        self.assertEqual(view["keys"], {"openai": "saved key ending 1234"})
+        self.assertNotIn("sk-secret", json.dumps(view))
+        # A blank key keeps the saved one; clear_key removes it.
+        s.save(s.merge_draft({"mode": "byok", "provider": "openai", "key": "", "model": "other"}))
+        self.assertEqual(s.load()["keys"]["openai"], {"key": "sk-secret-1234"})
+        s.save(s.merge_draft({"mode": "byok", "provider": "openai", "clear_key": True}))
+        self.assertNotIn("openai", s.load()["keys"])
+
+    def test_rejects_non_http_addresses(self):
+        with self.assertRaises(ValueError):
+            web.ai_settings.merge_draft({"mode": "local", "ollama_url": "file:///etc"})
+
+    def test_environment_settings_show_without_revealing_keys(self):
+        env = {"TIDY_API_BASE": "http://router.test/v1", "TIDY_MODEL": "general", "TIDY_API_KEY_FILE": "/no/such/file",
+               "TIDY_FALLBACK_API_BASE": "http://localhost:11434/v1", "TIDY_FALLBACK_MODEL": "qwen3.5:4b",
+               "TIDY_FALLBACK_REASONING_EFFORT": "none"}
+        with patch.dict(os.environ, env):
+            view = web.ai_settings.public_view()
+        self.assertEqual(view["source"], "env")
+        self.assertEqual((view["mode"], view["provider"], view["base_url"]), ("byok", "custom", "http://router.test/v1"))
+        self.assertEqual(view["keys"], {"custom": "saved key file"})
+        self.assertTrue(view["fallback_local"])
+        self.assertEqual(view["ollama_model"], "qwen3.5:4b")
+
+    def test_lists_local_models_without_embedding_models(self):
+        tags = Mock(status_code=200, json=Mock(return_value={"models": [
+            {"name": "qwen3.5:4b", "size": 4_000_000_000}, {"name": "nomic-embed-text:latest", "size": 300_000_000}]}))
+        tags.raise_for_status = Mock()
+        with patch.object(web.requests, "get", return_value=tags) as get:
+            models = web.ai_settings.list_models({"mode": "local", "ollama_url": "http://localhost:11434/"})
+        self.assertEqual(get.call_args.args[0], "http://localhost:11434/api/tags")
+        self.assertEqual(models, [{"id": "qwen3.5:4b", "size": 4.0}])
+
+    def test_lists_hosted_models(self):
+        listing = Mock(status_code=200, json=Mock(return_value={"data": [{"id": "b-model"}, {"id": "a-model"}]}))
+        listing.raise_for_status = Mock()
+        ai = {"mode": "byok", "provider": "groq", "keys": {"groq": {"key": "gsk_x"}}}
+        with patch.object(web.requests, "get", return_value=listing) as get:
+            models = web.ai_settings.list_models(ai)
+        self.assertEqual(get.call_args.args[0], "https://api.groq.com/openai/v1/models")
+        self.assertEqual(get.call_args.kwargs["headers"], {"Authorization": "Bearer gsk_x"})
+        self.assertEqual([m["id"] for m in models], ["a-model", "b-model"])
+        client = MagicMock()
+        client.models.list.return_value = [Mock(id="claude-opus-5-5")]
+        with patch("anthropic.Anthropic", return_value=client):
+            models = web.ai_settings.list_models({"mode": "byok", "provider": "anthropic", "keys": {"anthropic": {"key": "k"}}})
+        self.assertEqual(models, [{"id": "claude-opus-5-5", "size": None}])
+
+
+def claude_reply(text, stop_reason="end_turn"):
+    return Mock(stop_reason=stop_reason, content=[Mock(type="thinking"), Mock(type="text", text=text)])
+
+
+class ClaudeTidyTests(unittest.TestCase):
+    def setUp(self):
+        self.network = patch.object(web.requests.sessions.Session, "request", side_effect=AssertionError("Unexpected network access"))
+        self.network.start()
+        self.addCleanup(self.network.stop)
+        self.client = MagicMock()
+        patcher = patch.object(web.tidy.anthropic, "Anthropic", return_value=self.client)
+        self.constructor = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def backend(self, model="claude-opus-5-5", effort=""):
+        return web.ai_settings.Backend(base="", model=model, key="sk-ant-test", kind="anthropic", reasoning_effort=effort)
+
+    def test_opus_uses_server_side_fallbacks_and_low_effort(self):
+        self.client.beta.messages.create.return_value = claude_reply('{"blocks": []}')
+        answer = web.tidy.chat(self.backend(), "system", "user")
+        self.assertEqual(answer, '{"blocks": []}')
+        kwargs = self.client.beta.messages.create.call_args.kwargs
+        self.assertEqual(kwargs["betas"], ["server-side-fallback-2026-07-01"])
+        self.assertEqual(kwargs["fallbacks"], "default")
+        self.assertEqual(kwargs["output_config"], {"effort": "low"})
+        self.assertNotIn("temperature", kwargs)
+        self.assertEqual(self.constructor.call_args.kwargs["api_key"], "sk-ant-test")
+
+    def test_haiku_uses_plain_messages_and_keeps_chosen_effort(self):
+        self.client.messages.create.return_value = claude_reply("OK")
+        web.tidy.chat(self.backend("claude-haiku-5-5", effort="high"), "system", "user")
+        kwargs = self.client.messages.create.call_args.kwargs
+        self.assertEqual(kwargs["output_config"], {"effort": "high"})
+        self.assertNotIn("fallbacks", kwargs)
+
+    def test_refusals_and_unreachable_service(self):
+        self.client.beta.messages.create.return_value = claude_reply("", stop_reason="refusal")
+        with self.assertRaisesRegex(web.tidy.TidyError, "declined"):
+            web.tidy.chat(self.backend(), "s", "u")
+        self.client.beta.messages.create.side_effect = web.tidy.anthropic.APIConnectionError(request=Mock())
+        local = web.ai_settings.Backend(base="http://localhost:11434/v1", model="qwen3.5:4b")
+        with patch.object(web.tidy.requests, "post", return_value=chat_reply("OK")):
+            answer, used = web.tidy.first_answer([self.backend(), local], "s", "u")
+        self.assertEqual((answer, used.model), ("OK", "qwen3.5:4b"))
+
+
+class SettingsRouteTests(unittest.TestCase):
+    def setUp(self):
+        env = patch.dict(os.environ, no_tidy_env(), clear=True)
+        env.start()
+        self.addCleanup(env.stop)
+        clear_saved_settings()
+        self.addCleanup(clear_saved_settings)
+        self.network = patch.object(web.requests.sessions.Session, "request", side_effect=AssertionError("Unexpected network access"))
+        self.network.start()
+        self.addCleanup(self.network.stop)
+        self.client = web.app.test_client()
+
+    def test_settings_page_is_local_only_and_locked_down(self):
+        response = self.client.get("/settings")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("AI settings", response.get_data(as_text=True))
+        self.assertIn("script-src 'nonce-", response.headers["Content-Security-Policy"])
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual(self.client.get("/settings", headers={"Host": "evil.example:5013"}).status_code, 403)
+        with patch.dict(os.environ, {"LADDER_ALLOWED_HOSTS": "ladder.lan"}):
+            self.assertEqual(self.client.get("/settings", headers={"Host": "ladder.lan:5013"}).status_code, 200)
+
+    def test_save_and_read_back_without_the_key(self):
+        response = self.client.post("/settings/ai", json={"mode": "byok", "provider": "anthropic", "key": "sk-ant-abcd9999"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["keys"], {"anthropic": "saved key ending 9999"})
+        body = self.client.get("/settings/ai").get_data(as_text=True)
+        self.assertNotIn("sk-ant-abcd", body)
+
+    def test_changes_need_json_from_this_site(self):
+        self.assertEqual(self.client.post("/settings/ai", data={"mode": "off"}).status_code, 403)
+        self.assertEqual(self.client.post("/settings/ai", json={"mode": "off"}, headers={"Origin": "https://evil.example"}).status_code, 403)
+        self.assertEqual(self.client.post("/settings/ai", json={"mode": "off"}, headers={"Host": "evil.example"}).status_code, 403)
+        self.assertEqual(self.client.post("/reader/tidy", json={"html": MESSY}, headers={"Host": "evil.example"}).status_code, 403)
+        self.assertEqual(self.client.post("/settings/ai", json={"mode": "local", "ollama_url": "ftp://x"}).status_code, 400)
+
+    def test_models_and_test_routes(self):
+        with patch.object(web.ai_settings, "list_models", return_value=[{"id": "m", "size": 1.0}]) as listing:
+            response = self.client.post("/settings/ai/models", json={"mode": "local", "list": "local"})
+        self.assertEqual(response.get_json(), {"models": [{"id": "m", "size": 1.0}]})
+        self.assertEqual(listing.call_args.args[0]["list"], "local")
+        draft = {"mode": "local", "ollama_url": "http://localhost:11434", "ollama_model": "qwen3.5:4b"}
+        with patch.object(web.tidy.requests, "post", return_value=chat_reply("OK")) as post:
+            response = self.client.post("/settings/ai/test", json=draft)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["reply"], "OK")
+        self.assertEqual(post.call_args.args[0], "http://localhost:11434/v1/chat/completions")
+        self.assertEqual(self.client.post("/settings/ai/test", json={"mode": "off"}).status_code, 502)
+
+    def test_home_page_links_to_settings(self):
+        self.assertIn('href="/settings"', self.client.get("/").get_data(as_text=True))
+
+
 class PublicWordingTests(unittest.TestCase):
     """The project never advertises getting around paywalls or similar."""
     BANNED = re.compile(
@@ -448,6 +648,7 @@ class PublicWordingTests(unittest.TestCase):
     def test_pages_readme_and_image_labels(self):
         self.assertClean("home page template", web.html)
         self.assertClean("reader template", web.reader.READER_TEMPLATE)
+        self.assertClean("settings page", web.settings_page.SETTINGS_TEMPLATE)
         for name in ("README.md", "Dockerfile", "docker-compose.yaml"):
             self.assertClean(name, (self.ROOT / name).read_text(encoding="utf-8"))
 

@@ -41,5 +41,6 @@
   "tidy_done": "Tidied by {model} in {seconds}s: {headings} headings added, {joined} pieces joined, {lists} lists, {dropped} words of clutter removed. The wording is unchanged.",
   "tidy_show_original": "Show original",
   "tidy_show_tidy": "Show tidied",
-  "tidy_failed": "Couldn't tidy this page: {reason}."
+  "tidy_failed": "Couldn't tidy this page: {reason}.",
+  "settings_link": "AI settings (optional)"
 }

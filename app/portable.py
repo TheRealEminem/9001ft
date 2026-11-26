@@ -32,6 +32,8 @@ def load_local_env(path=os.path.join(os.path.dirname(os.path.abspath(__file__)),
 load_local_env()
 
 import reader  # noqa: E402
+import ai_settings  # noqa: E402
+import settings_page  # noqa: E402
 import tidy  # noqa: E402
 
 app = flask.Flask(__name__)
@@ -100,6 +102,7 @@ _DEFAULT_STRINGS = {
     "tidy_show_original": "Show original",
     "tidy_show_tidy": "Show tidied",
     "tidy_failed": "Couldn't tidy this page: {reason}.",
+    "settings_link": "AI settings (optional)",
     "reader_empty": (
         "Couldn't find the article text on this page. "
         "Try the original page instead."
@@ -205,6 +208,7 @@ html = """
             cursor: grab;
         }
         body.dark-mode .bookmarklet { color: #bbb; }
+        .settings-link { color: inherit; }
         body.dark-mode .bookmarklet-link { color: #b9a8ff; border-color: #7359f8; }
 
         h1 {
@@ -529,6 +533,7 @@ html = """
         <div class="bookmarklet">
             <a class="bookmarklet-link" href="{{ reader_bookmarklet }}" onclick="return false;"><span aria-hidden="true">&#128214;</span>&nbsp; {{ bookmarklet_label }}</a>
             <p>{{ bookmarklet_hint }}</p>
+            <p><a class="settings-link" href="/settings">&#9881;&#65039; {{ settings_link }}</a></p>
         </div>
     </div>
 
@@ -1461,16 +1466,95 @@ def reader_from_browser():
     return render_reader(page_html, url, None, strings)
 
 
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def local_request_problem(json_only=False):
+    """Why this request may not use the settings or the AI, or None if it may.
+
+    These endpoints use your API keys, so they only answer:
+    - requests addressed to localhost (or a host in LADDER_ALLOWED_HOSTS), so a
+      website can't reach them by pointing its own domain at your computer;
+    - from this server's own pages (the Origin check);
+    - with a JSON body when they change something, which a page on another
+      site can't send without a CORS preflight this server never approves."""
+    host = (urlparse("//" + (request.host or "")).hostname or "").lower()
+    allowed = LOCAL_HOSTS | {h.strip().lower() for h in os.environ.get("LADDER_ALLOWED_HOSTS", "").split(",") if h.strip()}
+    if host not in allowed and not host.endswith(".localhost"):
+        return "AI settings only work at localhost (see LADDER_ALLOWED_HOSTS in the README)"
+    origin = request.headers.get("Origin")
+    if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
+        return "not allowed from another site"
+    if json_only and not request.is_json:
+        return "not allowed"
+    return None
+
+
+@app.route("/settings", methods=["GET"])
+def settings_view():
+    problem = local_request_problem()
+    if problem:
+        return problem, 403
+    nonce = secrets.token_urlsafe(16)
+    providers = {key: {k: v for k, v in spec.items() if k in ("label", "key_hint", "models")}
+                 for key, spec in ai_settings.PROVIDERS.items()}
+    body = flask.render_template_string(settings_page.SETTINGS_TEMPLATE, nonce=nonce, providers=providers)
+    response = Response(body, mimetype="text/html")
+    response.headers["Content-Security-Policy"] = settings_page.content_security_policy(nonce)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.route("/settings/ai", methods=["GET", "POST"])
+def settings_ai():
+    problem = local_request_problem(json_only=request.method == "POST")
+    if problem:
+        return flask.jsonify(error=problem), 403
+    if request.method == "POST":
+        try:
+            ai_settings.save(ai_settings.merge_draft(request.get_json(silent=True) or {}))
+        except ValueError as error:
+            return flask.jsonify(error=str(error)), 400
+    response = flask.jsonify(ai_settings.public_view())
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.route("/settings/ai/models", methods=["POST"])
+def settings_ai_models():
+    problem = local_request_problem(json_only=True)
+    if problem:
+        return flask.jsonify(error=problem), 403
+    data = request.get_json(silent=True) or {}
+    try:
+        draft = ai_settings.merge_draft(data)
+        draft["list"] = data.get("list")
+        return flask.jsonify(models=ai_settings.list_models(draft))
+    except ValueError as error:
+        return flask.jsonify(error=str(error)), 400
+
+
+@app.route("/settings/ai/test", methods=["POST"])
+def settings_ai_test():
+    problem = local_request_problem(json_only=True)
+    if problem:
+        return flask.jsonify(error=problem), 403
+    try:
+        return flask.jsonify(tidy.test_connection(ai_settings.merge_draft(request.get_json(silent=True) or {})))
+    except ValueError as error:
+        return flask.jsonify(error=str(error)), 400
+    except tidy.TidyError as error:
+        return flask.jsonify(error=str(error)), 502
+
+
 @app.route("/reader/tidy", methods=["POST"])
 def reader_tidy():
     """AI tidy for the article shown in Reader view (see tidy.py)."""
+    problem = local_request_problem(json_only=True)
+    if problem:
+        return flask.jsonify(error=problem), 403
     if not tidy.enabled():
         return flask.jsonify(error="AI tidy isn't set up on this server"), 404
-    # JSON only, and only from this server's own pages: a JSON post from
-    # another site needs a CORS preflight, which this server never approves.
-    origin = request.headers.get("Origin")
-    if not request.is_json or (origin and origin.rstrip("/") != request.host_url.rstrip("/")):
-        return flask.jsonify(error="not allowed"), 403
     data = request.get_json(silent=True) or {}
     url = data.get("url") if isinstance(data.get("url"), str) else ""
     html = data.get("html") if isinstance(data.get("html"), str) else ""

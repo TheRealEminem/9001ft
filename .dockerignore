@@ -9,3 +9,4 @@ tests
 screenshots
 .env*
 .DS_Store
+data
