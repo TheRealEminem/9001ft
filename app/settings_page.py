@@ -41,6 +41,7 @@ SETTINGS_TEMPLATE = """<!DOCTYPE html>
   .mode { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--rule); border-radius: 10px; margin: 10px 0 0; cursor: pointer; }
   .mode input { margin-top: 5px; flex: none; }
   .mode b { display: block; }
+  .mode .help b { display: inline; }
   .mode .help { margin: 2px 0 0; }
   .body { border: 1px solid var(--rule); border-top: 0; border-radius: 0 0 10px 10px; margin: -6px 0 0; padding: 16px 14px 8px; background: var(--card); }
   .field { margin: 0 0 16px; }

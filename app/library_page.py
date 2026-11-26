@@ -63,6 +63,11 @@ LIBRARY_TEMPLATE = _HEAD + """<title>{{ library_title }} · 9001ft Ladder</title
   .bookmarklet { margin-top: 36px; padding-top: 22px; border-top: 1px solid var(--rule); text-align: center; color: var(--muted); font-size: 14px; }
   .bookmarklet h2 { font-size: 1.05rem; color: var(--text); margin: 0 0 12px; }
   .bookmarklet p { max-width: 560px; margin: 12px auto 0; }
+  .phone-tip { display: none; }
+  @media (hover: none) and (pointer: coarse) {
+    .bookmarklet-link, .bookmarklet-hint, #bookmarklet-heading { display: none !important; }
+    .phone-tip { display: block; }
+  }
   .bookmarklet-link {
     display: inline-block; padding: 9px 16px; border: 2px dashed var(--accent); border-radius: 999px;
     color: var(--accent) !important; font-weight: 600; text-decoration: none; cursor: grab;
@@ -133,7 +138,8 @@ LIBRARY_TEMPLATE = _HEAD + """<title>{{ library_title }} · 9001ft Ladder</title
   <section class="bookmarklet" aria-labelledby="bookmarklet-heading">
     <h2 id="bookmarklet-heading">{{ library_bookmarklet_heading }}</h2>
     <a class="bookmarklet-link" id="keep-bookmarklet" href="{{ keep_bookmarklet }}"><span aria-hidden="true">&#128204;</span>&nbsp; {{ library_bookmarklet_label }}</a>
-    <p>{{ library_bookmarklet_hint }}</p>
+    <p class="bookmarklet-hint">{{ library_bookmarklet_hint }}</p>
+    <p class="phone-tip">{{ library_phone_tip }}</p>
     <p id="bookmarklet-note" role="status"></p>
   </section>
 </main>

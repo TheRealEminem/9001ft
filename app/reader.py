@@ -612,6 +612,16 @@ READER_TEMPLATE = """<!DOCTYPE html>
   :root[data-theme="sepia"] { --highlight: #f0d88a; }
   @media (prefers-color-scheme: dark) { :root[data-theme="auto"] { --highlight: #4d4114; } }
   .bar-inner { flex-wrap: wrap; }
+  #more { display: none; }
+  /* Wide screens: room for the whole toolbar on one row. */
+  @media (min-width: 900px) { .bar-inner { max-width: 1000px; } }
+  /* Phones: one row with the main actions; the rest behind the "⋯" button. */
+  @media (max-width: 600px) {
+    .bar-inner { gap: 8px 10px; padding: 8px 12px; }
+    .bar .extra { display: none !important; }
+    .bar.show-more .extra { display: inline-flex !important; align-items: center; }
+    #more { display: inline-block; font-size: 18px; line-height: 1; padding: 4px 10px; }
+  }
   .bar button:focus-visible, .bar a:focus-visible, .bar select:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
   .tools { position: relative; }
   .menu {
@@ -662,11 +672,11 @@ READER_TEMPLATE = """<!DOCTYPE html>
 <header class="bar">
   <div class="bar-inner">
     <a class="brand" href="/">9001ft</a>
-    {% if original_href %}<a href="{{ original_href }}" id="full-page" title="{{ reader_original_title }}">{{ reader_original }}</a>{% endif %}
-    <a href="{{ source_url }}" id="live-page" title="{{ reader_source_title }}" target="_blank" rel="noopener noreferrer">{{ reader_source }} &#8599;</a>
-    {% if keep_href %}<a href="{{ keep_href }}" id="keep-copy">&#128204; {{ keep_button }}</a>{% endif %}
-    <button type="button" id="smaller" title="{{ reader_smaller }}" aria-label="{{ reader_smaller }}">A&minus;</button>
-    <button type="button" id="larger" title="{{ reader_larger }}" aria-label="{{ reader_larger }}">A+</button>
+    {% if original_href %}<a class="extra" href="{{ original_href }}" id="full-page" title="{{ reader_original_title }}">{{ reader_original }}</a>{% endif %}
+    <a class="extra" href="{{ source_url }}" id="live-page" title="{{ reader_source_title }}" target="_blank" rel="noopener noreferrer">{{ reader_source }} &#8599;</a>
+    {% if keep_href %}<a class="extra" href="{{ keep_href }}" id="keep-copy">&#128204; {{ keep_button }}</a>{% endif %}
+    <button type="button" class="extra" id="smaller" title="{{ reader_smaller }}" aria-label="{{ reader_smaller }}">A&minus;</button>
+    <button type="button" class="extra" id="larger" title="{{ reader_larger }}" aria-label="{{ reader_larger }}">A+</button>
     {% if article.content %}
     <button type="button" id="listen" title="{{ listen_button }}" aria-label="{{ listen_button }}" aria-expanded="false" aria-controls="listen-panel" hidden>&#128266;</button>
     <div class="tools">
@@ -679,7 +689,8 @@ READER_TEMPLATE = """<!DOCTYPE html>
     </div>
     {% endif %}
     {% if tidy_enabled and article.content %}<button type="button" id="tidy">&#10024; {{ tidy_button }}</button>{% endif %}
-    <button type="button" id="theme" title="{{ reader_theme }}" aria-label="{{ reader_theme }}">&#9681;</button>
+    <button type="button" class="extra" id="theme" title="{{ reader_theme }}" aria-label="{{ reader_theme }}">&#9681;</button>
+    <button type="button" id="more" aria-expanded="false" title="{{ reader_more }}" aria-label="{{ reader_more }}">&#8943;</button>
   </div>
   {% if article.content %}
   <div class="listen-panel" id="listen-panel" role="group" aria-label="{{ listen_controls }}" hidden>
@@ -1093,6 +1104,13 @@ READER_TEMPLATE = """<!DOCTYPE html>
   }
 
   // Export: the server converts the article exactly as it's shown now.
+  var moreButton = document.getElementById("more");
+  if (moreButton) {
+    moreButton.addEventListener("click", function () {
+      var open = document.querySelector(".bar").classList.toggle("show-more");
+      moreButton.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  }
   var exportButton = document.getElementById("export");
   if (exportButton && articleEl) {
     var EXPORT = {{ {"working": export_working, "done": export_done, "failed": export_failed} | tojson }};
