@@ -1325,6 +1325,232 @@ def html_escape(text):
     from markupsafe import escape  # what Jinja uses
     return str(escape(text))
 
+EXPORT_HTML = """<h2>Rungs &amp; rails</h2>
+<p>A <b>ladder</b> is <i>tall</i>. See <a href="https://example.com/a b">the guide</a> and <code>step_count</code>.<br>Next line.</p>
+<p># not a heading and 1. not a list</p>
+<ul><li>Wood<ul><li>Oak</li></ul></li><li>Metal</li></ul>
+<ol start="3"><li>Third</li><li>Fourth</li></ol>
+<blockquote><p>Climb carefully.</p></blockquote>
+<pre><code>height = rungs * 0.3
+print(height)</code></pre>
+<figure><img src="https://example.com/ladder.jpg" alt="A tall ladder"><figcaption>Very tall</figcaption></figure>
+<table><tr><th>Type</th><th>Feet</th></tr><tr><td>Step</td><td>6</td></tr></table>
+<p><div>Block inside a paragraph</div></p>
+<p onclick="steal()">Bad <script>alert(1)</script><a href="javascript:alert(2)">link</a> \x07end</p>"""
+
+EXPORT_META = {"title": "Ünïcode: How tall / can it get?", "url": URL, "site": "Example Times",
+               "byline": "Pat Writer", "date": "November 20, 2026", "lang": "en"}
+
+
+class ExportTests(unittest.TestCase):
+    def fragment(self, html=EXPORT_HTML):
+        return web.reader.clean_fragment(html, URL)
+
+    def test_markdown_conversion(self):
+        md = web.export.to_markdown(EXPORT_META, self.fragment())
+        self.assertTrue(md.startswith("# Ünïcode: How tall / can it get?\n\n"))
+        self.assertIn(f"Source: [Example Times]({URL})", md)
+        self.assertIn("By: Pat Writer", md)
+        self.assertIn("Published: November 20, 2026", md)
+        self.assertIn("## Rungs & rails", md)
+        self.assertIn("A **ladder** is *tall*. See [the guide](https://example.com/a%20b) and `step_count`.  \nNext line.", md)
+        self.assertIn("\\# not a heading", md)
+        self.assertIn("- Wood\n  - Oak\n- Metal", md)
+        self.assertIn("3. Third\n4. Fourth", md)
+        self.assertIn("> Climb carefully.", md)
+        self.assertIn("```\nheight = rungs * 0.3\nprint(height)\n```", md)
+        self.assertIn("![A tall ladder](https://example.com/ladder.jpg)", md)
+        self.assertIn("| Type | Feet |\n| --- | --- |\n| Step | 6 |", md)
+        self.assertIn("Block inside a paragraph", md)
+        self.assertNotIn("alert", md)
+        self.assertNotIn("javascript", md)
+
+    def test_markdown_escapes_text_that_looks_like_markup(self):
+        md = web.export.to_markdown({**EXPORT_META, "url": ""}, self.fragment(
+            "<p>1. First</p><p>Use *stars* and [brackets] and <span>&lt;tags&gt;</span>_</p>"))
+        self.assertIn("1\\. First", md)
+        self.assertIn("Use \\*stars\\* and \\[brackets\\] and \\<tags\\>\\_", md)
+        self.assertNotIn("Source:", md)
+
+    def test_epub_structure_and_validity(self):
+        import io
+        import zipfile
+        from xml.etree import ElementTree
+        data = web.export.to_epub(EXPORT_META, self.fragment(), now=web.export.datetime(2026, 11, 25, 12, 0, 0))
+        book = zipfile.ZipFile(io.BytesIO(data))
+        first = book.infolist()[0]
+        self.assertEqual(first.filename, "mimetype")
+        self.assertEqual(first.compress_type, zipfile.ZIP_STORED)
+        self.assertEqual(first.extra, b"")
+        self.assertEqual(book.read("mimetype"), b"application/epub+zip")
+        self.assertEqual(data[30:38], b"mimetype")  # right after the first local header
+        for name in book.namelist():
+            if name.endswith((".xml", ".opf", ".xhtml")):
+                ElementTree.fromstring(book.read(name))  # well-formed XML
+        container = ElementTree.fromstring(book.read("META-INF/container.xml"))
+        rootfile = container.find(".//{urn:oasis:names:tc:opendocument:xmlns:container}rootfile")
+        self.assertEqual(rootfile.get("full-path"), "EPUB/package.opf")
+
+        ns = {"opf": "http://www.idpf.org/2007/opf", "dc": "http://purl.org/dc/elements/1.1/"}
+        opf = ElementTree.fromstring(book.read("EPUB/package.opf"))
+        self.assertEqual(opf.get("version"), "3.0")
+        uid = opf.find(f".//dc:identifier[@id='{opf.get('unique-identifier')}']", ns)
+        self.assertTrue(uid.text.startswith("urn:uuid:"))
+        self.assertEqual(opf.find(".//opf:meta[@property='dcterms:modified']", ns).text, "2026-11-25T12:00:00Z")
+        self.assertEqual(opf.find(".//dc:title", ns).text, EXPORT_META["title"])
+        self.assertEqual(opf.find(".//dc:date", ns).text, "2026-11-20")
+        self.assertEqual(opf.find(".//opf:item[@properties='nav']", ns).get("href"), "nav.xhtml")
+        manifest = {item.get("href") for item in opf.findall(".//opf:item", ns)}
+        self.assertEqual(manifest, {"nav.xhtml", "chapter.xhtml", "style.css"})
+        self.assertEqual([i.get("idref") for i in opf.findall(".//opf:itemref", ns)], ["chapter"])
+
+        nav = book.read("EPUB/nav.xhtml").decode()
+        self.assertIn('epub:type="toc"', nav)
+        self.assertIn('href="chapter.xhtml#h1">Rungs &amp; rails</a>', nav)
+
+        chapter = book.read("EPUB/chapter.xhtml").decode()
+        self.assertIn("<h1>Ünïcode: How tall / can it get?</h1>", chapter)
+        self.assertIn('<a href="https://example.com/a%20b">the guide</a>', chapter)
+        self.assertIn("<br/>", chapter)
+        self.assertIn('<a href="https://example.com/ladder.jpg">[Image: A tall ladder]</a>', chapter)
+        self.assertIn("Images aren't included", chapter)
+        self.assertIn("<div><div>Block inside a paragraph</div></div>", chapter)
+        self.assertNotIn("<img", chapter)
+        self.assertNotIn("script", chapter)
+        self.assertNotIn("javascript", chapter)
+        self.assertNotIn("\x07", chapter)
+
+    def test_epub_without_images_has_no_note(self):
+        import io
+        import zipfile
+        data = web.export.to_epub({**EXPORT_META, "lang": "not a language!"}, self.fragment("<p>Just words.</p>"))
+        book = zipfile.ZipFile(io.BytesIO(data))
+        chapter = book.read("EPUB/chapter.xhtml").decode()
+        self.assertNotIn("Images aren't included", chapter)
+        self.assertIn('xml:lang="en"', chapter)
+
+    def test_safe_filenames(self):
+        self.assertEqual(web.export.safe_filename(EXPORT_META["title"], "md"), "unicode-how-tall-can-it-get.md")
+        self.assertEqual(web.export.safe_filename("日本語のタイトル", "epub"), "article.epub")
+        self.assertEqual(web.export.safe_filename('a"b\r\nc;d', "md"), "a-b-c-d.md")
+        self.assertLessEqual(len(web.export.safe_filename("word " * 100, "epub")), 85)
+
+
+class ExportRouteTests(unittest.TestCase):
+    def setUp(self):
+        self.network = patch.object(web.requests.sessions.Session, "request", side_effect=AssertionError("Unexpected network access"))
+        self.network.start()
+        self.addCleanup(self.network.stop)
+        web.page_cache.clear()
+        self.addCleanup(web.page_cache.clear)
+        self.client = web.app.test_client()
+
+    def post(self, payload, **kwargs):
+        return self.client.post("/reader/export", json=payload, **kwargs)
+
+    def test_markdown_download(self):
+        response = self.post({"format": "markdown", "html": EXPORT_HTML, **EXPORT_META})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["Content-Type"], "text/markdown; charset=utf-8")
+        self.assertEqual(response.headers["Content-Disposition"], 'attachment; filename="unicode-how-tall-can-it-get.md"')
+        body = response.get_data(as_text=True)
+        self.assertIn("## Rungs & rails", body)
+        self.assertNotIn("alert", body)
+
+    def test_epub_download(self):
+        import io
+        import zipfile
+        response = self.post({"format": "epub", "html": EXPORT_HTML, **EXPORT_META})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/epub+zip")
+        self.assertTrue(response.headers["Content-Disposition"].endswith('.epub"'))
+        self.assertEqual(zipfile.ZipFile(io.BytesIO(response.data)).namelist()[0], "mimetype")
+
+    def test_exports_what_the_page_sends_after_resanitizing(self):
+        tidied = '<h2>Added heading</h2><p>Tidied <img src="x" onerror="alert(1)"> text.</p>'
+        body = self.post({"format": "markdown", "html": tidied, "title": "T", "url": URL}).get_data(as_text=True)
+        self.assertIn("## Added heading", body)
+        self.assertIn("![](https://example.com/news/x)", body)
+        self.assertNotIn("onerror", body)
+
+    def test_refuses_bad_requests(self):
+        self.assertEqual(self.post({"format": "markdown", "html": "<p>x</p>"}, headers={"Origin": "https://evil.example"}).status_code, 403)
+        self.assertEqual(self.client.post("/reader/export", data={"format": "markdown", "html": "<p>x</p>"}).status_code, 403)
+        self.assertEqual(self.post({"format": "markdown", "html": "<p>x</p>"}, base_url="http://ladder.example.com").status_code, 403)
+        self.assertEqual(self.post({"format": "pdf", "html": "<p>x</p>"}).status_code, 400)
+        self.assertEqual(self.post({"format": "epub", "html": "  "}).status_code, 400)
+        self.assertEqual(self.post(["not", "an", "object"]).status_code, 400)
+        self.assertEqual(self.post({"format": ["epub"], "html": "<p>x</p>"}).status_code, 400)
+        with patch.object(web, "EXPORT_MAX_HTML", 10):
+            self.assertEqual(self.post({"format": "epub", "html": "<p>far too long</p>"}).status_code, 413)
+
+    def test_bad_metadata_is_ignored(self):
+        response = self.post({"format": "markdown", "html": "<p>x</p>", "title": ["no"], "url": "javascript:alert(1)",
+                              "byline": 5, "lang": "<script>"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["Content-Disposition"], 'attachment; filename="article.md"')
+        self.assertNotIn("javascript", response.get_data(as_text=True))
+
+
+class ReaderExtrasPageTests(unittest.TestCase):
+    def setUp(self):
+        self.network = patch.object(web.requests.sessions.Session, "request", side_effect=AssertionError("Unexpected network access"))
+        self.network.start()
+        self.addCleanup(self.network.stop)
+        web.page_cache.clear()
+        self.addCleanup(web.page_cache.clear)
+        self.client = web.app.test_client()
+
+    def check_page(self, response):
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        csp = response.headers["Content-Security-Policy"]
+        nonce = re.search(r"'nonce-([^']+)'", csp).group(1)
+        self.assertNotIn("unsafe-inline", csp.split("script-src")[1].split(";")[0])
+        self.assertIn("connect-src 'self'", csp)
+        # Every script carries the nonce; no inline handlers.
+        self.assertEqual(body.count("<script"), body.count(f'<script nonce="{nonce}">'))
+        self.assertNotRegex(body, r"<[^>]+\son[a-z]+=")
+        self.assertIn('id="listen"', body)
+        self.assertIn('aria-controls="listen-panel"', body)
+        self.assertIn('id="listen-status" role="status"', body)
+        self.assertIn('data-export="markdown"', body)
+        self.assertIn('data-export="epub"', body)
+        self.assertIn('data-export="print"', body)
+        self.assertIn("window.print()", body)
+        self.assertIn('fetch("/reader/export"', body)
+        self.assertIn("@media print", body)
+        self.assertIn("prefers-reduced-motion", body)
+        return body
+
+    def test_reader_page_has_read_aloud_and_export(self):
+        web.page_cache[URL] = {"html": READER_PAGE.replace("<html>", '<html lang="en-GB">'), "timestamp": web.time.time()}
+        body = self.check_page(self.client.get("/reader/" + URL))
+        self.assertIn('<article lang="en-GB">', body)
+        self.assertIn('"url": "https://example.com/news/article"', body)
+
+    def test_bookmarklet_page_has_them_too(self):
+        self.check_page(self.client.post("/reader", data={"html": READER_PAGE, "url": URL}))
+
+    def test_no_extras_without_an_article(self):
+        response = self.client.post("/reader", data={"html": "<html><body><p>Hi.</p></body></html>", "url": URL})
+        body = response.get_data(as_text=True)
+        self.assertNotIn('id="listen"', body)
+        self.assertNotIn('id="export"', body)
+
+    def test_article_language_is_validated(self):
+        page = READER_PAGE.replace("<html>", '<html lang="x onmouseover=alert(1)">')
+        self.assertEqual(web.reader.extract_article(page, URL)["lang"], "")
+        self.assertEqual(web.reader.extract_article(READER_PAGE.replace("<html>", '<html lang="pt-BR">'), URL)["lang"], "pt-BR")
+
+    def test_new_strings_are_in_english_locale(self):
+        en = json.loads((Path(__file__).resolve().parents[1] / "app" / "locales" / "en.json").read_text(encoding="utf-8"))
+        for key, value in web._DEFAULT_STRINGS.items():
+            if key.startswith(("listen_", "export_")):
+                self.assertEqual(en.get(key), value, key)
+        labels = {key[len("export_label_"):] for key in web._DEFAULT_STRINGS if key.startswith("export_label_")}
+        self.assertEqual(labels, set(web.export.DEFAULT_LABELS))
+
 
 if __name__ == "__main__":
     unittest.main()

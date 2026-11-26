@@ -6,7 +6,7 @@ A small reader you run on your own computer. Paste a link and get the page back 
 
 9001ft Ladder is a fork of [wasi-master/13ft](https://github.com/wasi-master/13ft) (MIT). On top of what 13ft does, it adds:
 
-- **Reader view.** Any page becomes a clean article: title, site, author, date, reading time, text and images, with light, dark and sepia themes and adjustable text size. The article's wording is never changed.
+- **Reader view.** Any page becomes a clean article: title, site, author, date, reading time, text and images, with light, dark and sepia themes and adjustable text size. It can read the article aloud and export it as Markdown, an EPUB e-book or a PDF. The article's wording is never changed.
 - **Send to Reader bookmarklet.** Click it on any page open in your own browser, including articles you subscribe to, and that page opens in Reader view exactly as your browser had it.
 - **Your library.** Press **📌 Keep a copy** to save a page on your computer with its styles, images, fonts and scripts, plus a Reader version, to read later, even offline.
 - **AI tidy (optional).** When an article comes out messy, one click asks an AI model how it should be laid out: headings, lists, paragraphs that were split apart, clutter to leave out. The model never writes text; the page is rebuilt from the original words, and a check confirms nothing was reworded.
@@ -55,6 +55,11 @@ Then open <http://localhost:5013>. Stop it with Ctrl+C.
 - **Paste a link** on the home page. Tick **Open in Reader view** to go straight to the clean version.
 - **Put the link after the address:** `http://localhost:5013/https://example.com/some-article` (from [@atcasanova](https://github.com/atcasanova)).
 - **Reader view directly:** `http://localhost:5013/reader/https://example.com/some-article`, or press the 📖 button on any page 9001ft fetched.
+
+### Listening and keeping a copy
+
+- **🔊 Read aloud.** Reads the article with your browser's built-in voices, so nothing goes over the network. Play, pause, stop, a speed from 0.8× to 2×, and a voice picker (it starts with a voice for the article's language). The paragraph being read is highlighted and kept in view. Reading stops when you leave the page. The button only appears in browsers that can speak.
+- **Export.** Download the article as **Markdown** (`.md`, with the title, source link, author and date at the top) or as an **e-book** (`.epub`, opens in Apple Books, Calibre and most e-readers; images become links), or use **Print or save as PDF** for a clean printout without the toolbar. Exports use the article as it's shown, so a tidied article exports tidied. Like AI tidy, the export button answers only at `localhost` (see `LADDER_ALLOWED_HOSTS` below).
 
 ### Bookmarklets
 
@@ -153,7 +158,7 @@ venv/bin/python -m pip install pytest
 venv/bin/python -m pytest -q
 ```
 
-The tests run offline: Flask's test client stands in for the browser, and every outside request is mocked. They cover the routes, error handling, languages, HTML processing, archive.org rewriting, Reader view extraction and sanitizing, AI tidy plans and their safety checks, the archive.org relay, the bookmarklet endpoints, the library (saving, sandboxing, address checks and size limits), caching, archive fallbacks and the progress stream. GitHub Actions runs them on every push and pull request (`.github/workflows/test.yml`).
+The tests run offline: Flask's test client stands in for the browser, and every outside request is mocked. They cover the routes, error handling, languages, HTML processing, archive.org rewriting, Reader view extraction and sanitizing, Markdown and EPUB export, AI tidy plans and their safety checks, the archive.org relay, the bookmarklet endpoints, the library (saving, sandboxing, address checks and size limits), caching, archive fallbacks and the progress stream. GitHub Actions runs them on every push and pull request (`.github/workflows/test.yml`).
 
 ## Credits
 

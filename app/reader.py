@@ -40,6 +40,8 @@ DROP_TAGS = ["script", "style", "noscript", "form", "input", "button", "select",
 
 WAYBACK_ASSET_RE = re.compile(r"^https?://web\.archive\.org/web/\d{1,14}[a-z]{0,2}_?/(https?://.+)$", re.I)
 
+LANG_RE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8}){0,4}$")
+
 MIN_ARTICLE_CHARS = 250
 WORDS_PER_MINUTE = 230
 
@@ -224,6 +226,9 @@ def extract_article(page_html, page_url):
     author = _author(soup)
     published = _published(soup)
     lead_image = _meta(soup, "og:image", "twitter:image")
+    html_tag = soup.find("html")
+    lang = (html_tag.get("lang") or html_tag.get("xml:lang") or "").strip() if html_tag else ""
+    lang = lang if LANG_RE.match(lang) else ""
 
     _promote_lazy_images(soup)
     document = Document(str(soup), url=base_url)
@@ -250,6 +255,7 @@ def extract_article(page_html, page_url):
         "published": published,
         "minutes": max(1, round(words / WORDS_PER_MINUTE)),
         "lead_image": lead_image,
+        "lang": lang,
         "content": str(fragment) if len(text) >= MIN_ARTICLE_CHARS else "",
     }
 
@@ -352,6 +358,52 @@ READER_TEMPLATE = """<!DOCTYPE html>
     font: 400 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--muted);
     background: var(--quote); border-radius: 6px; padding: 10px 14px; margin: -12px 0 28px;
   }
+  /* Read aloud and Export */
+  :root { --highlight: #fff0b3; }
+  :root[data-theme="dark"] { --highlight: #4d4114; }
+  :root[data-theme="sepia"] { --highlight: #f0d88a; }
+  @media (prefers-color-scheme: dark) { :root[data-theme="auto"] { --highlight: #4d4114; } }
+  .bar-inner { flex-wrap: wrap; }
+  .bar button:focus-visible, .bar a:focus-visible, .bar select:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+  .tools { position: relative; }
+  .menu {
+    position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 200px;
+    display: flex; flex-direction: column; gap: 2px; padding: 6px;
+    background: var(--bg); border: 1px solid var(--rule); border-radius: 8px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  }
+  .menu.menu-left { right: auto; left: 0; }
+  .menu[hidden], .listen-panel[hidden] { display: none; }
+  .bar .menu button { border: 0; text-align: left; padding: 9px 10px; color: var(--text); white-space: nowrap; }
+  .bar .menu button:hover, .bar .menu button:focus-visible { background: var(--quote); }
+  .listen-panel {
+    max-width: var(--measure); margin: 0 auto; padding: 0 16px 10px;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+  }
+  .listen-panel label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+  .listen-panel select {
+    font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--rule);
+    border-radius: 6px; padding: 4px 6px; max-width: 220px;
+  }
+  .listen-status { color: var(--muted); font-weight: 400; }
+  article .reading { background: var(--highlight); box-shadow: 0 0 0 6px var(--highlight); border-radius: 2px; }
+  @media (prefers-reduced-motion: no-preference) { article .reading { transition: background-color 0.2s; } }
+  .print-source { display: none; }
+  @media print {
+    :root, :root[data-theme] { --bg: #fff; --text: #000; --muted: #444; --rule: #bbb; --link: #000; --quote: #f2f2f2; }
+    .bar, .tidy-note, .listen-panel, .menu { display: none !important; }
+    body { background: #fff; color: #000; font-size: 12pt !important; }
+    main { max-width: none; padding: 0; }
+    .print-source { display: block; font: 400 9pt/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #444; word-break: break-all; margin: -20px 0 24px; }
+    article .reading { background: none; box-shadow: none; }
+    article a { color: inherit; }
+    h1.title, article h2, article h3, article h4 { break-after: avoid; page-break-after: avoid; }
+    article img, article figure, article blockquote, article pre, article table { break-inside: avoid; page-break-inside: avoid; }
+    article img { max-height: 60vh; width: auto; }
+    article pre { white-space: pre-wrap; overflow: visible; }
+    article table { display: table; overflow: visible; }
+    article iframe { display: none; }
+    @page { margin: 2cm 1.8cm; }
+  }
   @media (max-width: 600px) { :root { --size: 18px; } h1.title { font-size: 1.6em; } main { padding-top: 28px; } }
 </style>
 </head>
@@ -364,9 +416,35 @@ READER_TEMPLATE = """<!DOCTYPE html>
     {% if keep_href %}<a href="{{ keep_href }}" id="keep-copy">&#128204; {{ keep_button }}</a>{% endif %}
     <button type="button" id="smaller" title="{{ reader_smaller }}" aria-label="{{ reader_smaller }}">A&minus;</button>
     <button type="button" id="larger" title="{{ reader_larger }}" aria-label="{{ reader_larger }}">A+</button>
+    {% if article.content %}
+    <button type="button" id="listen" title="{{ listen_button }}" aria-label="{{ listen_button }}" aria-expanded="false" aria-controls="listen-panel" hidden>&#128266;</button>
+    <div class="tools">
+      <button type="button" id="export" aria-expanded="false" aria-controls="export-menu">{{ export_button }} <span aria-hidden="true">&#9662;</span></button>
+      <div class="menu" id="export-menu" role="group" aria-label="{{ export_menu }}" hidden>
+        <button type="button" data-export="markdown">{{ export_markdown }}</button>
+        <button type="button" data-export="epub">{{ export_epub }}</button>
+        <button type="button" data-export="print">{{ export_print }}</button>
+      </div>
+    </div>
+    {% endif %}
     {% if tidy_enabled and article.content %}<button type="button" id="tidy">&#10024; {{ tidy_button }}</button>{% endif %}
     <button type="button" id="theme" title="{{ reader_theme }}" aria-label="{{ reader_theme }}">&#9681;</button>
   </div>
+  {% if article.content %}
+  <div class="listen-panel" id="listen-panel" role="group" aria-label="{{ listen_controls }}" hidden>
+    <button type="button" id="listen-play">{{ listen_pause }}</button>
+    <button type="button" id="listen-stop">{{ listen_stop }}</button>
+    <label>{{ listen_speed }}
+      <select id="listen-rate">
+        <option value="0.8">0.8&times;</option><option value="1" selected>1&times;</option>
+        <option value="1.25">1.25&times;</option><option value="1.5">1.5&times;</option>
+        <option value="1.75">1.75&times;</option><option value="2">2&times;</option>
+      </select>
+    </label>
+    <label>{{ listen_voice }} <select id="listen-voice"></select></label>
+    <span class="listen-status" id="listen-status" role="status" aria-live="polite"></span>
+  </div>
+  {% endif %}
 </header>
 <main>
   {% if article.site %}<div class="site">{{ article.site }}</div>{% endif %}
@@ -376,10 +454,12 @@ READER_TEMPLATE = """<!DOCTYPE html>
     {% if article.published %}<span>{{ article.published }}</span>{% endif %}
     {% if article.content %}<span>{{ reader_minutes.replace('{minutes}', article.minutes|string) }}</span>{% endif %}
   </div>
+  <p class="print-source">{{ source_url }}</p>
   <p class="tidy-note" id="tidy-note" role="status" hidden></p>
+  <p class="tidy-note" id="export-note" role="status" hidden></p>
   {% if article.lead_image %}<img class="lead" src="{{ article.lead_image }}" alt="">{% endif %}
   {% if article.content %}
-  <article>{{ article.content | safe }}</article>
+  <article{% if article.lang %} lang="{{ article.lang }}"{% endif %}>{{ article.content | safe }}</article>
   {% else %}
   <p class="empty">{{ reader_empty }} <a href="{{ original_href or source_url }}">{{ reader_original }}</a></p>
   {% endif %}
@@ -458,6 +538,305 @@ READER_TEMPLATE = """<!DOCTYPE html>
         label("\\u2728 " + TIDY.button);
       }).then(function () { tidyButton.disabled = false; });
     };
+  }
+
+  var articleEl = document.querySelector("article");
+  var DOC = {{ {"title": article.title, "url": source_url, "site": article.site, "byline": article.author,
+                "date": article.published, "lang": article.lang or ""} | tojson }};
+
+  // Read aloud: the browser's own speech, so nothing leaves this computer.
+  var listenButton = document.getElementById("listen");
+  var synth = window.speechSynthesis;
+  if (listenButton && articleEl && synth && window.SpeechSynthesisUtterance) {
+    var LISTEN = {{ {"play": listen_play, "pause": listen_pause, "reading": listen_reading, "paused": listen_paused,
+                     "stopped": listen_stopped, "done": listen_done, "no_voices": listen_no_voices} | tojson }};
+    var panel = document.getElementById("listen-panel");
+    var playButton = document.getElementById("listen-play");
+    var stopButton = document.getElementById("listen-stop");
+    var rateSelect = document.getElementById("listen-rate");
+    var voiceSelect = document.getElementById("listen-voice");
+    var listenStatus = document.getElementById("listen-status");
+    var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var docLang = (articleEl.getAttribute("lang") || root.getAttribute("lang") || navigator.language || "en").toLowerCase();
+    var langPrefix = docLang.split("-")[0];
+    var BLOCKS = "h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,figcaption,dt,dd,td,th,caption";
+    var CONTAINERS = BLOCKS + ",ul,ol,dl,table,thead,tbody,tfoot,tr,figure,div,section,article,aside,header,footer";
+    var voices = [], chunks = [], index = 0, total = 0, lastBlock = -1;
+    var playing = false, token = 0, current = null, utterance = null, failures = 0;
+    listenButton.hidden = false;
+    synth.cancel();
+
+    var voiceKey = "readerVoice-" + langPrefix;
+    function matchScore(voice) {
+      var lang = (voice.lang || "").toLowerCase().replace("_", "-");
+      return lang === docLang ? 0 : lang.split("-")[0] === langPrefix ? 1 : 2;
+    }
+    function loadVoices() {
+      var list = synth.getVoices().slice();
+      if (!list.length) { return; }
+      list.sort(function (a, b) { return matchScore(a) - matchScore(b) || a.name.localeCompare(b.name); });
+      voices = list;
+      var saved = load(voiceKey, "");
+      function first(test) { return voices.filter(test)[0]; }
+      var chosen = first(function (v) { return v.voiceURI === saved; })
+        || first(function (v) { return matchScore(v) < 2 && v["default"]; })
+        || first(function (v) { return matchScore(v) < 2 && v.localService; })
+        || first(function (v) { return matchScore(v) < 2; })
+        || first(function (v) { return v["default"]; }) || voices[0];
+      voiceSelect.textContent = "";
+      voices.forEach(function (voice, i) {
+        var option = document.createElement("option");
+        option.value = String(i);
+        option.textContent = voice.name + " (" + voice.lang + ")";
+        option.selected = voice === chosen;
+        voiceSelect.appendChild(option);
+      });
+    }
+    loadVoices();
+    if (synth.addEventListener) { synth.addEventListener("voiceschanged", loadVoices); }
+    else { synth.onvoiceschanged = loadVoices; }
+    rateSelect.value = load("readerRate", "1");
+    if (!rateSelect.value) { rateSelect.value = "1"; }
+
+    // The element's own words, leaving nested blocks to be read on their own.
+    function ownText(el) {
+      var text = "";
+      for (var node = el.firstChild; node; node = node.nextSibling) {
+        if (node.nodeType === 3) { text += node.nodeValue; }
+        else if (node.nodeType === 1 && !node.matches(CONTAINERS)) { text += node.tagName === "BR" ? " " : ownText(node); }
+      }
+      return text;
+    }
+    // Browsers cut off long utterances, so speak a few sentences at a time.
+    function split(text) {
+      text = text.replace(/\\s+/g, " ").trim();
+      if (!text) { return []; }
+      var sentences;
+      if (window.Intl && Intl.Segmenter) {
+        sentences = Array.from(new Intl.Segmenter(docLang, { granularity: "sentence" }).segment(text), function (s) { return s.segment; });
+      } else {
+        sentences = text.match(/[^.!?。！？]+[.!?。！？]*\\s*/g) || [text];
+      }
+      var out = [], buffer = "";
+      function push(piece) {
+        piece = piece.trim();
+        if (!piece) { return; }
+        if (buffer && (buffer + " " + piece).length > 220) { out.push(buffer); buffer = piece; }
+        else { buffer = buffer ? buffer + " " + piece : piece; }
+      }
+      sentences.forEach(function (sentence) {
+        sentence = sentence.trim();
+        while (sentence.length > 260) {
+          var cut = Math.max(sentence.lastIndexOf(", ", 220) + 1, sentence.lastIndexOf(" ", 220));
+          if (cut < 60) { cut = 220; }
+          push(sentence.slice(0, cut));
+          sentence = sentence.slice(cut).trim();
+        }
+        push(sentence);
+      });
+      if (buffer) { out.push(buffer); }
+      return out;
+    }
+    function build() {
+      var blocks = [];
+      var title = document.querySelector("h1.title");
+      if (title && title.textContent.trim()) { blocks.push({ el: title, text: title.textContent }); }
+      [articleEl].concat(Array.prototype.slice.call(articleEl.querySelectorAll(BLOCKS + ",div,section,figure"))).forEach(function (el) {
+        var text = ownText(el);
+        if (text.trim()) { blocks.push({ el: el, text: text }); }
+      });
+      chunks = [];
+      blocks.forEach(function (block, i) {
+        split(block.text).forEach(function (text) { chunks.push({ el: block.el, text: text, block: i }); });
+      });
+      total = blocks.length;
+      index = 0;
+      lastBlock = -1;
+    }
+    function setStatus(text) { listenStatus.textContent = text; }
+    function highlight(el) {
+      if (current === el) { return; }
+      if (current) { current.classList.remove("reading"); }
+      current = el;
+      if (!el) { return; }
+      el.classList.add("reading");
+      var box = el.getBoundingClientRect();
+      var barBottom = document.querySelector(".bar").getBoundingClientRect().bottom;
+      if (box.top < barBottom || box.bottom > window.innerHeight) {
+        el.scrollIntoView({ block: "center", behavior: reduceMotion ? "auto" : "smooth" });
+      }
+    }
+    function speak() {
+      if (!playing) { return; }
+      var chunk = chunks[index];
+      if (!chunk || !chunk.el.isConnected) { finish(chunk ? LISTEN.stopped : LISTEN.done); return; }
+      highlight(chunk.el);
+      if (chunk.block !== lastBlock) {
+        lastBlock = chunk.block;
+        setStatus(LISTEN.reading.replace("{current}", chunk.block + 1).replace("{total}", total));
+      }
+      var mine = ++token;
+      utterance = new SpeechSynthesisUtterance(chunk.text);  // kept so it isn't garbage-collected mid-sentence
+      var voice = voices[parseInt(voiceSelect.value, 10)];
+      if (voice) { utterance.voice = voice; utterance.lang = voice.lang; } else { utterance.lang = docLang; }
+      utterance.rate = parseFloat(rateSelect.value) || 1;
+      utterance.onstart = function () { failures = 0; };
+      utterance.onend = function () {
+        if (mine !== token || !playing) { return; }
+        index += 1;
+        speak();
+      };
+      utterance.onerror = function (event) {
+        if (mine !== token || !playing || event.error === "interrupted" || event.error === "canceled") { return; }
+        failures += 1;
+        if (failures >= 3) { finish(voices.length ? LISTEN.stopped : LISTEN.no_voices); return; }
+        index += 1;
+        speak();
+      };
+      synth.speak(utterance);
+    }
+    function silence() {
+      token += 1;  // ignore the end events of whatever was speaking
+      synth.cancel();
+    }
+    function play() {
+      if (!chunks.length || index >= chunks.length || !chunks[index].el.isConnected) { build(); }
+      if (!chunks.length) { setStatus(LISTEN.done); return; }
+      if (!voices.length) { loadVoices(); }
+      playing = true;
+      failures = 0;
+      lastBlock = -1;
+      playButton.textContent = LISTEN.pause;
+      if (synth.speaking || synth.pending) { silence(); setTimeout(speak, 60); }
+      else { speak(); }
+    }
+    function pause() {
+      playing = false;
+      silence();
+      playButton.textContent = LISTEN.play;
+      setStatus(LISTEN.paused);
+    }
+    function finish(message) {
+      playing = false;
+      silence();
+      highlight(null);
+      chunks = [];
+      index = 0;
+      playButton.textContent = LISTEN.play;
+      setStatus(message || "");
+    }
+    function restart() {
+      if (!playing) { return; }
+      silence();
+      setTimeout(speak, 60);
+    }
+    function closePanel() {
+      panel.hidden = true;
+      listenButton.setAttribute("aria-expanded", "false");
+    }
+    listenButton.onclick = function () {
+      if (panel.hidden) {
+        panel.hidden = false;
+        listenButton.setAttribute("aria-expanded", "true");
+        play();
+      } else {
+        finish(LISTEN.stopped);
+        closePanel();
+      }
+    };
+    playButton.onclick = function () { if (playing) { pause(); } else { play(); } };
+    stopButton.onclick = function () {
+      finish(LISTEN.stopped);
+      closePanel();
+      listenButton.focus();
+    };
+    panel.addEventListener("keydown", function (event) { if (event.key === "Escape") { stopButton.onclick(); } });
+    rateSelect.onchange = function () { save("readerRate", rateSelect.value); restart(); };
+    voiceSelect.onchange = function () {
+      var voice = voices[parseInt(voiceSelect.value, 10)];
+      if (voice) { save(voiceKey, voice.voiceURI); }
+      restart();
+    };
+    // Tidy swaps the article out: stop first so the highlight isn't saved with it.
+    document.addEventListener("click", function (event) {
+      if ((playing || current) && event.target.closest && event.target.closest("#tidy")) { finish(LISTEN.stopped); }
+    }, true);
+    window.addEventListener("pagehide", silence);
+    window.addEventListener("beforeunload", silence);
+  }
+
+  // Export: the server converts the article exactly as it's shown now.
+  var exportButton = document.getElementById("export");
+  if (exportButton && articleEl) {
+    var EXPORT = {{ {"working": export_working, "done": export_done, "failed": export_failed} | tojson }};
+    var menu = document.getElementById("export-menu");
+    var exportNote = document.getElementById("export-note");
+    var busy = false;
+    function setMenu(open) {
+      menu.hidden = !open;
+      exportButton.setAttribute("aria-expanded", open ? "true" : "false");
+      if (open) {  // on narrow screens the button can sit near the left edge
+        menu.classList.remove("menu-left");
+        if (menu.getBoundingClientRect().left < 8) { menu.classList.add("menu-left"); }
+      }
+    }
+    function showExportNote(text) { exportNote.hidden = false; exportNote.textContent = text; }
+    exportButton.onclick = function () {
+      setMenu(menu.hidden);
+      if (!menu.hidden) { menu.querySelector("button").focus(); }
+    };
+    menu.addEventListener("keydown", function (event) {
+      var items = Array.prototype.slice.call(menu.querySelectorAll("button"));
+      var at = items.indexOf(document.activeElement);
+      if (event.key === "Escape") { setMenu(false); exportButton.focus(); }
+      else if (event.key === "ArrowDown") { event.preventDefault(); items[(at + 1) % items.length].focus(); }
+      else if (event.key === "ArrowUp") { event.preventDefault(); items[(at - 1 + items.length) % items.length].focus(); }
+    });
+    document.addEventListener("click", function (event) {
+      if (!menu.hidden && !(event.target.closest && event.target.closest(".tools"))) { setMenu(false); }
+    });
+    menu.addEventListener("click", function (event) {
+      var button = event.target.closest("button[data-export]");
+      if (!button) { return; }
+      setMenu(false);
+      exportButton.focus();
+      var format = button.getAttribute("data-export");
+      if (format === "print") { window.print(); } else { download(format); }
+    });
+    function download(format) {
+      if (busy) { return; }
+      busy = true;
+      showExportNote(EXPORT.working);
+      var lead = document.querySelector("img.lead");
+      var payload = { format: format, html: (lead ? lead.outerHTML : "") + articleEl.innerHTML };
+      Object.keys(DOC).forEach(function (key) { payload[key] = DOC[key]; });
+      fetch("/reader/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      }).then(function (response) {
+        if (!response.ok) {
+          return response.json().catch(function () { return {}; }).then(function (data) {
+            throw new Error(data.error || String(response.status));
+          });
+        }
+        var match = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") || "");
+        var name = match ? match[1] : "article";
+        return response.blob().then(function (blob) {
+          var link = document.createElement("a");
+          link.href = URL.createObjectURL(blob);
+          link.download = name;
+          link.hidden = true;
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          setTimeout(function () { URL.revokeObjectURL(link.href); }, 10000);
+          showExportNote(EXPORT.done.replace("{filename}", name));
+        });
+      })["catch"](function (error) {
+        showExportNote(EXPORT.failed.replace("{reason}", error.message));
+      }).then(function () { busy = false; });
+    }
   }
 })();
 </script>
