@@ -2053,8 +2053,12 @@ KEEP_BOOKMARKLET = (
 )
 
 
-def keep_bookmarklet(host_url):
-    return KEEP_BOOKMARKLET.replace("{action}", host_url.rstrip("/") + "/library/keep")
+def keep_bookmarklet(host_url, token=None):
+    script = KEEP_BOOKMARKLET.replace("{action}", host_url.rstrip("/") + "/library/keep")
+    if token:
+        # Same as the Send to Reader bookmarklet: proves it came from this app.
+        script = script.replace("['url',location.href]]", "['url',location.href],['token','" + token + "']]")
+    return script
 
 
 def keep_copy_href(page_html, url, original_href):
@@ -2116,7 +2120,7 @@ def render_library(strings, status=200, error=None):
     saved = library.get(request.args.get("saved", "")) if not error else None
     return render_library_template(
         library_page.LIBRARY_TEMPLATE, strings, status=status, items=items, saved=saved, error=error,
-        deleted=request.args.get("deleted") == "1" and not error, keep_bookmarklet=keep_bookmarklet(request.host_url))
+        deleted=request.args.get("deleted") == "1" and not error, keep_bookmarklet=keep_bookmarklet(request.host_url, auth.bookmarklet_token()))
 
 
 def render_keep_confirmation(strings, status=200, error=None, url="", title="", draft=""):
@@ -2309,24 +2313,43 @@ def reader_from_browser():
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
-def local_request_problem(json_only=False):
-    """Why this request may not use the settings or the AI, or None if it may.
-
-    These endpoints use your API keys, so they only answer:
-    - requests addressed to localhost (or a host in LADDER_ALLOWED_HOSTS), so a
-      website can't reach them by pointing its own domain at your computer;
-    - from this server's own pages (the Origin check);
-    - with a JSON body when they change something, which a page on another
-      site can't send without a CORS preflight this server never approves."""
+def host_problem():
+    """Refuse requests not addressed to localhost (or a host listed in
+    LADDER_ALLOWED_HOSTS). Stops a website from reaching this server by
+    pointing its own domain at your computer (DNS rebinding)."""
     host = (urlparse("//" + (request.host or "")).hostname or "").lower()
     allowed = LOCAL_HOSTS | {h.strip().lower() for h in os.environ.get("LADDER_ALLOWED_HOSTS", "").split(",") if h.strip()}
     if host not in allowed and not host.endswith(".localhost"):
-        return "AI settings only work at localhost (see LADDER_ALLOWED_HOSTS in the README)"
+        return "this only works at localhost (see LADDER_ALLOWED_HOSTS in the README)"
+    return None
+
+
+def same_site_problem(json_only=False):
+    """Refuse requests from other sites: the Origin must be this server (a
+    sandboxed page's "null" counts as another site), and with json_only the
+    body must be JSON, which another site can't send without a CORS preflight
+    this server never approves."""
     origin = request.headers.get("Origin")
     if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
         return "not allowed from another site"
     if json_only and not request.is_json:
         return "not allowed"
+    return None
+
+
+def local_request_problem(json_only=False):
+    """Why this request may not use the settings or the AI, or None if it may.
+    These endpoints use your API keys, so they need both checks above."""
+    return host_problem() or same_site_problem(json_only)
+
+
+@app.before_request
+def library_host_check():
+    """Your library is private: same localhost rule as the settings."""
+    if (request.endpoint or "").startswith("library_"):
+        problem = host_problem()
+        if problem:
+            return problem, 403
     return None
 
 
@@ -2415,8 +2438,9 @@ EXPORT_MAX_HTML = 10 * 1024 * 1024
 @app.route("/reader/export", methods=["POST"])
 def reader_export():
     """Markdown or EPUB download of the article the Reader page is showing
-    (tidied, if AI tidy was applied). See export.py."""
-    problem = local_request_problem(json_only=True)
+    (tidied, if AI tidy was applied). See export.py. It uses no keys, so it
+    only needs to come from this server's own pages."""
+    problem = same_site_problem(json_only=True)
     if problem:
         return flask.jsonify(error=problem), 403
     try:

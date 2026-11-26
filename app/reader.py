@@ -215,7 +215,8 @@ def extract_article(page_html, page_url):
     """Return a dict for READER_TEMPLATE: title, site, author, date, minutes, content."""
     soup = BeautifulSoup(page_html, "html.parser")
     base_tag = soup.find("base", href=True)
-    base_url = base_tag["href"] if base_tag else page_url
+    # A relative <base href="/news/"> is relative to the page itself.
+    base_url = urljoin(page_url, base_tag["href"]) if base_tag else page_url
 
     button = soup.find(id="ladder-reader-btn")
     if button:

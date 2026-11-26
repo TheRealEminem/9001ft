@@ -37,7 +37,15 @@ log = logging.getLogger(__name__)
 PUBLIC_ENDPOINTS = {
     "healthz", "login", "logout", "manifest", "app_icon", "service_worker",
     "offline_page", "banner", "favicon", "static",
+    # Sandboxed pages (fetched articles, kept copies) have an opaque origin, so
+    # their font and stylesheet requests carry no login cookie. The relay only
+    # serves archive.org files, so it's safe without a login.
+    "relay",
 }
+
+# Endpoints the bookmarklets post to from other sites (no Lax cookie), which
+# accept the bookmarklet token instead.
+BOOKMARKLET_ENDPOINTS = {"reader_from_browser", "library_keep_from_browser"}
 
 SECRET_FILE = "secret_key"
 SESSION_LIFETIME = timedelta(days=30)
@@ -215,7 +223,7 @@ def safe_next(value):
 
 
 def _bookmarklet_post_allowed():
-    if request.method != "POST" or request.endpoint != "reader_from_browser":
+    if request.method != "POST" or request.endpoint not in BOOKMARKLET_ENDPOINTS:
         return False
     token = request.form.get("token", "")
     expected = bookmarklet_token()
@@ -226,6 +234,11 @@ def require_login():
     """before_request hook: None to carry on, or the response to send instead."""
     if not enabled() or request.endpoint in PUBLIC_ENDPOINTS:
         return None
+    if request.endpoint == "library_file" and (request.view_args or {}).get("name") != "index.html":
+        # A kept copy's own files, requested by the sandboxed copy without the
+        # login cookie. They sit behind two long random names (the copy's id and
+        # the file's), and the copy's page itself still needs a login.
+        return None
     if logged_in() or _bookmarklet_post_allowed():
         return None
     if request.method in ("GET", "HEAD") and request.accept_mimetypes.accept_html:
@@ -233,7 +246,7 @@ def require_login():
         next_path = safe_next(target)
         location = "/login" if next_path == "/" else "/login?next=" + quote(next_path, safe="/:")
         return flask.redirect(location, 303)
-    if request.endpoint == "reader_from_browser":
+    if request.endpoint in BOOKMARKLET_ENDPOINTS:
         return flask.redirect("/login", 303)
     response = flask.jsonify(error="Log in first")
     response.status_code = 401

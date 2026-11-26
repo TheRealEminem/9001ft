@@ -1615,7 +1615,8 @@ class ExportRouteTests(unittest.TestCase):
     def test_refuses_bad_requests(self):
         self.assertEqual(self.post({"format": "markdown", "html": "<p>x</p>"}, headers={"Origin": "https://evil.example"}).status_code, 403)
         self.assertEqual(self.client.post("/reader/export", data={"format": "markdown", "html": "<p>x</p>"}).status_code, 403)
-        self.assertEqual(self.post({"format": "markdown", "html": "<p>x</p>"}, base_url="http://ladder.example.com").status_code, 403)
+        # Export uses no keys, so unlike the AI settings it works under any hostname.
+        self.assertEqual(self.post({"format": "markdown", "html": "<p>x</p>"}, base_url="http://ladder.example.com").status_code, 200)
         self.assertEqual(self.post({"format": "pdf", "html": "<p>x</p>"}).status_code, 400)
         self.assertEqual(self.post({"format": "epub", "html": "  "}).status_code, 400)
         self.assertEqual(self.post(["not", "an", "object"]).status_code, 400)
@@ -1773,7 +1774,10 @@ class SelfHostingTests(unittest.TestCase):
         self.assertEqual(self.client.post("/settings/ai", json={"mode": "off"}).status_code, 401)
         self.assertEqual(self.client.post("/reader/tidy", json={"html": "<p>x</p>"}).status_code, 401)
         self.assertEqual(self.client.post("/article", data={"link": URL}).status_code, 401)
-        self.assertEqual(self.client.get("/_relay/https://web.archive.org/web/1/https://a.com/x.css").status_code, 401)
+        # The relay stays public: sandboxed pages fetch fonts and styles through it
+        # without the login cookie, and it only serves archive.org files.
+        with patch.object(web.requests, "get", side_effect=web.requests.exceptions.ConnectionError()):
+            self.assertEqual(self.client.get("/_relay/https://web.archive.org/web/1/https://a.com/x.css").status_code, 502)
 
     def test_catch_all_cannot_hide_under_public_paths(self):
         self.with_password()
@@ -2034,6 +2038,52 @@ class SelfHostingTests(unittest.TestCase):
         for name, text in (("login page", web.auth.LOGIN_TEMPLATE), ("message page", web.pwa.MESSAGE_TEMPLATE),
                            ("service worker", sw)):
             self.assertIsNone(PublicWordingTests.BANNED.search(text), name)
+
+
+class IntegrationFixTests(unittest.TestCase):
+    """Fixes for how the features fit together."""
+
+    def setUp(self):
+        env = patch.dict(os.environ, no_tidy_env(), clear=True)
+        env.start()
+        self.addCleanup(env.stop)
+        self.network = patch.object(web.requests.sessions.Session, "request", side_effect=AssertionError("Unexpected network access"))
+        self.network.start()
+        self.addCleanup(self.network.stop)
+        self.client = web.app.test_client()
+
+    def test_library_is_localhost_only_like_the_settings(self):
+        self.assertEqual(self.client.get("/library").status_code, 200)
+        self.assertEqual(self.client.get("/library", headers={"Host": "evil.example:5013"}).status_code, 403)
+        with patch.dict(os.environ, {"LADDER_ALLOWED_HOSTS": "ladder.lan"}):
+            self.assertEqual(self.client.get("/library", headers={"Host": "ladder.lan"}).status_code, 200)
+
+    def test_keep_bookmarklet_carries_the_token_with_a_password(self):
+        with patch.dict(os.environ, {"LADDER_PASSWORD": "pw", "LADDER_SECRET_KEY": "k" * 32}):
+            token = web.auth.bookmarklet_token()
+            self.assertIn("['token','" + token + "']", web.keep_bookmarklet("http://localhost/", token))
+            page = "<html><head><title>T</title></head><body><p>" + "words " * 80 + "</p></body></html>"
+            # Without the token (and without a cookie), the cross-site post is sent to login.
+            self.assertEqual(self.client.post("/library/keep", data={"html": page, "url": URL}).status_code, 303)
+            allowed = self.client.post("/library/keep", data={"html": page, "url": URL, "token": token})
+            self.assertNotEqual(allowed.headers.get("Location", ""), "/login")
+            self.assertNotEqual(allowed.status_code, 401)
+        self.assertNotIn("token", web.keep_bookmarklet("http://localhost/"))
+
+    def test_kept_copy_files_load_without_the_cookie_but_the_page_needs_login(self):
+        with patch.dict(os.environ, {"LADDER_PASSWORD": "pw", "LADDER_SECRET_KEY": "k" * 32}):
+            with patch.object(web.library, "item_file", return_value=None):
+                asset = self.client.get("/library/" + "a" * 24 + "/assets/" + "b" * 16 + ".css")
+                page = self.client.get("/library/" + "a" * 24 + "/", headers={"Accept": "text/html"})
+        self.assertEqual(asset.status_code, 404)  # reached the route, no login asked
+        self.assertEqual(page.status_code, 303)
+        self.assertTrue(page.headers["Location"].startswith("/login"))
+
+    def test_relative_base_resolves_against_the_page(self):
+        page = '<html><head><base href="/news/"></head><body><article><p>' + "Ladder words here. " * 30 + \
+               '</p><img src="pic.jpg" alt="x"></article></body></html>'
+        content = web.reader.extract_article(page, "https://example.com/a/b")["content"]
+        self.assertIn('src="https://example.com/news/pic.jpg"', content)
 
 
 if __name__ == "__main__":
